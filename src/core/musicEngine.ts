@@ -26,12 +26,16 @@ import { formatDuration, parseVoiceCommand, truncate } from "../utils/format.js"
 import { SessionPersistence } from "./persistence.js";
 
 /**
- * ZiPlayer searches multiple plugins in parallel. In particular, SoundCloud's
- * search implementation can treat a `tts:` query as a song search even though
- * its canHandle method rejects it. Protect that reserved prefix without changing
- * how the music plugins handle normal searches or mobile YouTube URLs.
+ * ZiPlayer searches several plugins in parallel and falls back across sources
+ * when a stream fails. Do not let a TTS request be searched or replaced by a
+ * music source; keep the plugins' normal routing for all other tracks and URLs.
  */
-function excludeTtsFromMusicSearch<T extends BasePlugin>(plugin: T): T {
+function excludeTtsFromMusicSources<T extends BasePlugin>(plugin: T): T {
+	const isTtsTrack = (track: Track): boolean =>
+		track.source?.toLowerCase() === "tts" ||
+		track.id?.toLowerCase().startsWith("tts-") ||
+		Boolean(track.metadata?.tts);
+
 	const originalSearch = plugin.search.bind(plugin);
 	plugin.search = async (query: string, requestedBy: string, signal?: AbortSignal) => {
 		if (query.trim().toLowerCase().startsWith("tts:")) {
@@ -39,6 +43,20 @@ function excludeTtsFromMusicSearch<T extends BasePlugin>(plugin: T): T {
 		}
 		return originalSearch(query, requestedBy, signal);
 	};
+
+	const originalStream = plugin.getStream.bind(plugin);
+	plugin.getStream = async (track: Track, signal?: AbortSignal) => {
+		if (isTtsTrack(track)) throw new Error("Cannot use a music source for a TTS track");
+		return originalStream(track, signal);
+	};
+
+	if (plugin.getFallback) {
+		const originalFallback = plugin.getFallback.bind(plugin);
+		plugin.getFallback = async (track: Track, signal?: AbortSignal) => {
+			if (isTtsTrack(track)) throw new Error("Cannot fall back to music for a TTS track");
+			return originalFallback(track, signal);
+		};
+	}
 	return plugin;
 }
 
@@ -71,11 +89,11 @@ export class ZiMusicBotEngine {
 		this.ttsPlugin = new TTSPlugin({ defaultLang: config.ttsLang });
 		this.manager = new PlayerManager({
 			plugins: [
-				excludeTtsFromMusicSearch(new YouTubePlugin()),
-				excludeTtsFromMusicSearch(new SoundCloudPlugin()),
-				excludeTtsFromMusicSearch(new SpotifyPlugin()),
+				excludeTtsFromMusicSources(new YouTubePlugin()),
+				excludeTtsFromMusicSources(new SoundCloudPlugin()),
+				excludeTtsFromMusicSources(new SpotifyPlugin()),
 				this.ttsPlugin,
-				excludeTtsFromMusicSearch(new AttachmentsPlugin({ maxFileSize: 25 * 1024 * 1024 })),
+				excludeTtsFromMusicSources(new AttachmentsPlugin({ maxFileSize: 25 * 1024 * 1024 })),
 			],
 			extensions: globalExtensions,
 			extractorTimeout: config.extractorTimeoutMs,

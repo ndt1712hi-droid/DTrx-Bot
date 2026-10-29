@@ -48,6 +48,28 @@ function infoEmbed(description: string, color: number = COLORS.PRIMARY): EmbedBu
 	return new EmbedBuilder().setColor(color).setDescription(description);
 }
 
+class TtsSearchTimeoutError extends Error {
+	constructor() {
+		super("TTS metadata search timed out");
+		this.name = "TtsSearchTimeoutError";
+	}
+}
+
+/** Bound TTS metadata lookup; an expired search cannot start playback later. */
+async function withTtsSearchTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+	let timer: NodeJS.Timeout | undefined;
+	try {
+		return await Promise.race([
+			operation,
+			new Promise<T>((_resolve, reject) => {
+				timer = setTimeout(() => reject(new TtsSearchTimeoutError()), timeoutMs);
+			}),
+		]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
+}
+
 /**
  * Validates that the member is in a voice channel, and if a guild player is already
  * connected, ensures the member is in the SAME voice channel as the bot.
@@ -251,33 +273,44 @@ export class MusicCommandActions {
 		}
 
 		await ctx.defer();
-		const player = await this.engine.getOrCreatePlayer({
-			guildId: ctx.guild.id,
-			voiceChannelId: access.voiceChannel.id,
-			textChannelId: ctx.textChannelId,
-		});
-		await this.engine.ensureConnected(player, access.voiceChannel);
-
-		const ttsResult = await this.engine.ttsPlugin.search(`tts:${cleaned}`, ctx.userId);
-		const ttsTrack = ttsResult?.tracks?.[0];
-		if (!ttsTrack) {
-			await ctx.reply({
-				embeds: [infoEmbed("❌ Không thể tạo luồng giọng đọc TTS lúc này.", COLORS.ERROR)],
+		try {
+			const player = await this.engine.getOrCreatePlayer({
+				guildId: ctx.guild.id,
+				voiceChannelId: access.voiceChannel.id,
+				textChannelId: ctx.textChannelId,
 			});
-			return;
-		}
+			await this.engine.ensureConnected(player, access.voiceChannel);
 
-		const ok = await player.play(ttsTrack, ctx.userId);
-		if (!ok) {
+			const ttsResult = await withTtsSearchTimeout(
+				this.engine.ttsPlugin.search(`tts:${cleaned}`, ctx.userId),
+				Math.min(this.engine.config.extractorTimeoutMs, 20_000),
+			);
+			const ttsTrack = ttsResult?.tracks?.[0];
+			if (!ttsTrack) {
+				await ctx.reply({
+					embeds: [infoEmbed("❌ Không thể tạo luồng giọng đọc TTS lúc này.", COLORS.ERROR)],
+				});
+				return;
+			}
+
+			const ok = await player.play(ttsTrack, ctx.userId);
+			if (!ok) {
+				await ctx.reply({
+					embeds: [infoEmbed("❌ Không thể phát giọng đọc TTS trên kênh thoại.", COLORS.ERROR)],
+				});
+				return;
+			}
+
 			await ctx.reply({
-				embeds: [infoEmbed("❌ Không thể phát giọng đọc TTS trên kênh thoại.", COLORS.ERROR)],
+				embeds: [infoEmbed(`🗣️ Đã gửi giọng đọc tới <#${access.voiceChannel.id}>: *"${truncate(cleaned, 180)}"*`, COLORS.INFO)],
 			});
-			return;
+		} catch (err) {
+			console.error(`[TTS] Lỗi trong server ${ctx.guild.id}:`, err instanceof Error ? err.message : err);
+			const message = err instanceof TtsSearchTimeoutError
+				? "❌ Dịch vụ TTS phản hồi quá lâu. Hãy thử lại sau và kiểm tra kết nối mạng của bot."
+				: "❌ Không thể tạo hoặc phát giọng đọc TTS. Hãy thử lại và kiểm tra log Botkeep nếu lỗi tiếp diễn.";
+			await ctx.reply({ embeds: [infoEmbed(message, COLORS.ERROR)], ephemeral: true });
 		}
-
-		await ctx.reply({
-			embeds: [infoEmbed(`🗣️ Đã gửi giọng đọc tới <#${access.voiceChannel.id}>: *"${truncate(cleaned, 180)}"*`, COLORS.INFO)],
-		});
 	}
 
 	async pause(ctx: CommandContext): Promise<void> {
