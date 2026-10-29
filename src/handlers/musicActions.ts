@@ -276,7 +276,7 @@ export class MusicCommandActions {
 		}
 
 		await ctx.reply({
-			embeds: [infoEmbed(`🗣️ Đang đọc trên <#${access.voiceChannel.id}>: *"${truncate(cleaned, 180)}"*`, COLORS.INFO)],
+			embeds: [infoEmbed(`🗣️ Đã gửi giọng đọc tới <#${access.voiceChannel.id}>: *"${truncate(cleaned, 180)}"*`, COLORS.INFO)],
 		});
 	}
 

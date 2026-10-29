@@ -462,17 +462,116 @@ test("resolveInteractionGuildAndMember handles uncached raw APIInteractionGuildM
 	}
 });
 
-test("TTS query routes exclusively to TTSPlugin without YouTube/SoundCloud hijacking", async () => {
+test("TTS query routes exclusively to TTSPlugin without SoundCloud hijacking", async () => {
 	const { client, engine } = createBotInstance({
 		DISCORD_TOKEN: "dummy_token_for_unit_test",
 		ENABLE_PERSISTENCE: "false",
 	});
 
 	try {
+		const soundcloud = engine.manager.getPlugins().find((p) => p.name === "soundcloud") as any;
+		assert.ok(soundcloud);
+		let musicSearches = 0;
+		soundcloud.ready = Promise.resolve();
+		soundcloud.client = {
+			search: async () => {
+				musicSearches++;
+				return [{ id: 1, title: "Unrelated music", permalink_url: "https://soundcloud.com/example/song" }];
+			},
+		};
+		// The routing test must not depend on Google/Edge network availability.
+		(engine.ttsPlugin as any).analyzeTTSDuration = async () => 1;
+
 		const res = await engine.manager.search("tts: Xin chào anh em", "123456");
+		assert.equal(musicSearches, 0, "SoundCloud must not search a reserved TTS query");
 		assert.equal(res.tracks.length, 1, "Only TTSPlugin should handle 'tts:' prefixed queries");
 		assert.equal(res.tracks[0].source, "tts");
 		assert.ok(res.tracks[0].title.includes("Xin chào anh em"));
+	} finally {
+		await engine.shutdown();
+		await client.destroy();
+	}
+});
+
+test("TTS isolation preserves the YouTube plugin's mobile URL handling", async () => {
+	const { client, engine } = createBotInstance({
+		DISCORD_TOKEN: "dummy_token_for_unit_test",
+		ENABLE_PERSISTENCE: "false",
+	});
+
+	try {
+		const youtube = engine.manager.getPlugins().find((p) => p.name === "youtube") as any;
+		assert.ok(youtube);
+		youtube.ready = Promise.resolve();
+		let requestedId = "";
+		youtube.client = {
+			getInfo: async (id: string) => {
+				requestedId = id;
+				return { basic_info: { id, title: "Mobile YouTube result", duration: 120 } };
+			},
+		};
+		const result = await youtube.search("https://m.youtube.com/watch?v=dQw4w9WgXcQ", "123456");
+		assert.equal(requestedId, "dQw4w9WgXcQ");
+		assert.equal(result.tracks[0]?.title, "Mobile YouTube result");
+	} finally {
+		await engine.shutdown();
+		await client.destroy();
+	}
+});
+
+test("TTS command passes a TTS track directly to the player and reports failures", async () => {
+	const { client, engine, actions } = createBotInstance({
+		DISCORD_TOKEN: "dummy_token_for_unit_test",
+		ENABLE_PERSISTENCE: "false",
+	});
+
+	try {
+		const track = {
+			id: "tts-123",
+			title: "TTS (vi): Xin chào",
+			url: "tts://test",
+			duration: 1,
+			requestedBy: "user-1",
+			source: "tts",
+			metadata: { tts: { text: "Xin chào", lang: "vi", slow: false } },
+		};
+		let passedTrack: unknown;
+		let playSucceeds = true;
+		const player = {
+			play: async (value: unknown, userId: string) => {
+				passedTrack = value;
+				assert.equal(userId, "user-1");
+				return playSucceeds;
+			},
+		};
+		engine.getOrCreatePlayer = async () => player as any;
+		engine.ensureConnected = async () => undefined;
+		engine.ttsPlugin.search = async (query, requestedBy) => {
+			assert.equal(query, "tts:Xin chào");
+			assert.equal(requestedBy, "user-1");
+			return { tracks: [track] };
+		};
+		(engine.manager as any).search = async () => {
+			throw new Error("TTS must not search music sources");
+		};
+
+		const replies: ReplyPayload[] = [];
+		const ctx: CommandContext = {
+			guild: { id: "guild-1" } as any,
+			member: { voice: { channel: { id: "voice-1" } }, guild: { members: { me: null } } } as any,
+			userId: "user-1",
+			textChannelId: "text-1",
+			defer: async () => undefined,
+			reply: async (payload) => { replies.push(payload); },
+		};
+
+		await actions.tts(ctx, "  Xin chào  ");
+		assert.equal(passedTrack, track, "Pass the TTS track itself, not a query string");
+		assert.ok(replies.at(-1)?.embeds?.[0].data.description?.includes("giọng đọc"));
+
+		playSucceeds = false;
+		await actions.tts(ctx, "Xin chào");
+		assert.ok(replies.at(-1)?.embeds?.[0].data.description?.includes("Không thể phát"));
 	} finally {
 		await engine.shutdown();
 		await client.destroy();
