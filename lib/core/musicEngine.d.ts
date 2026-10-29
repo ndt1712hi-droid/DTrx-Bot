@@ -3,6 +3,7 @@ import { PlayerManager, type Player } from "ziplayer";
 import { TTSPlugin } from "@ziplayer/plugin";
 import type { BotConfig } from "../types/bot.js";
 import { SessionPersistence } from "./persistence.js";
+import { type AlwaysOnVoiceTarget } from "./alwaysOnStore.js";
 export declare class ZiMusicBotEngine {
     readonly client: Client;
     readonly config: BotConfig;
@@ -11,7 +12,35 @@ export declare class ZiMusicBotEngine {
     readonly ttsPlugin: TTSPlugin;
     private readonly refreshTimers;
     private readonly emptyChannelTimers;
+    private readonly alwaysOnStore;
+    private readonly guardedPlayers;
+    private readonly voiceModeLocks;
+    private readonly reconnectPending;
+    private readonly suppressedSessionRestores;
+    private readonly reconnectBackoff;
+    private alwaysOnTimer;
+    private shuttingDown;
     constructor(client: Client, config: BotConfig);
+    /** Guard ZiPlayer's own idle timers while 24/7 is enabled, without changing
+     * its normal leave policy for other servers. The lifecycle method is public. */
+    private guardPlayerLifecycle;
+    private clearEmptyChannelTimer;
+    private updateEmptyChannelTimer;
+    private withVoiceModeLock;
+    getAlwaysOnVoiceTarget(guildId: string): Promise<AlwaysOnVoiceTarget | undefined>;
+    /** Save the selected room before connecting, so the watchdog can retry a failed join. */
+    enableAlwaysOnVoice(target: AlwaysOnVoiceTarget, voiceChannel: VoiceBasedChannel): Promise<void>;
+    /** Disable persistence first; a concurrent watchdog cannot reconnect after this returns. */
+    disableAlwaysOnVoice(guildId: string): Promise<boolean>;
+    /** Atomically disable 24/7 and disconnect for an explicit /leave command. */
+    leaveVoice(guildId: string): Promise<{
+        disabled: boolean;
+        left: boolean;
+    }>;
+    /** Load configured rooms on ready and periodically repair lost connections. */
+    startAlwaysOnVoice(): Promise<number>;
+    refreshAlwaysOnVoice(): Promise<void>;
+    private reconnectAlwaysOnTarget;
     private getUserData;
     private resolveSendableChannel;
     /**

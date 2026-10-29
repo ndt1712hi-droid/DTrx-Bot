@@ -93,6 +93,13 @@ export function createBotInstance(customEnv?: NodeJS.ProcessEnv, options: Create
 			status: "online",
 		});
 
+		// Do not delay slash-command deployment while Discord voice reconnects.
+		const alwaysOnStartup = engine.startAlwaysOnVoice().then((savedRooms) => {
+			if (savedRooms > 0) console.log(`🔁 Chế độ 24/7: đã tải ${savedRooms} phòng thoại đã lưu.`);
+		}).catch((err: unknown) => {
+			console.error("[24/7] Không thể tải cấu hình phòng thoại:", err instanceof Error ? err.message : err);
+		});
+
 		if (config.autoDeployCommands) {
 			try {
 				await deploySlashCommands(config, readyClient.user.id);
@@ -102,6 +109,7 @@ export function createBotInstance(customEnv?: NodeJS.ProcessEnv, options: Create
 		}
 
 		engine.persistence.startPeriodicSave(engine.manager, 30_000);
+		await alwaysOnStartup;
 		const restored = await engine.restorePersistedSessions();
 		if (restored > 0) {
 			console.log(`🔄 Đã khôi phục ${restored} phiên phát nhạc từ lần chạy trước.`);

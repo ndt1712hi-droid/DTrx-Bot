@@ -382,6 +382,9 @@ export function registerInteractionHandler(engine: ZiMusicBotEngine, actions: Mu
 				case "tts":
 					await actions.tts(ctx, interaction.options.getString("text", true));
 					break;
+				case "247":
+					await actions.alwaysOnVoice(ctx, interaction.options.getSubcommand());
+					break;
 				case "pause":
 					await actions.pause(ctx);
 					break;

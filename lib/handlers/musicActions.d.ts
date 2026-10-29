@@ -33,6 +33,7 @@ export declare class MusicCommandActions {
     play(ctx: CommandContext, query?: string, attachmentUrl?: string): Promise<void>;
     playNext(ctx: CommandContext, query: string): Promise<void>;
     tts(ctx: CommandContext, text: string): Promise<void>;
+    alwaysOnVoice(ctx: CommandContext, modeInput?: string): Promise<void>;
     pause(ctx: CommandContext): Promise<void>;
     resume(ctx: CommandContext): Promise<void>;
     skip(ctx: CommandContext, toPosition?: number): Promise<void>;

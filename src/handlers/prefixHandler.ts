@@ -81,6 +81,11 @@ export function registerPrefixHandler(engine: ZiMusicBotEngine, actions: MusicCo
 					await actions.tts(ctx, args.join(" "));
 					break;
 
+				case "247":
+				case "24-7":
+					await actions.alwaysOnVoice(ctx, args[0] ?? "status");
+					break;
+
 				case "pause":
 					await actions.pause(ctx);
 					break;

@@ -25,7 +25,7 @@ Bot nghe nhạc Discord đa năng, hiệu năng cao được xây dựng hoàn c
   - **AI Autoplay (`AiAutoplayExtension`)** — Gợi ý nhạc theo gu bằng Gemini khi cấu hình `GEMINI_API_KEY`.
   - **Lavalink (`lavalinkExt`)** — Hỗ trợ kết nối Lavalink Nodes ngoài khi cấu hình `LAVALINK_NODES`.
 - 🎮 **3 phương thức điều khiển song song**:
-  - **26 Slash Commands (`/play`, `/filter`...)** có **Autocomplete tìm kiếm bài hát & bộ lọc trực tiếp**.
+  - **27 Slash Commands (`/play`, `/filter`...)** có **Autocomplete tìm kiếm bài hát & bộ lọc trực tiếp**.
   - **Prefix Commands (`!play`, `!skip`, `!np`...)** nhanh gọn.
   - **Bảng điều khiển Nút bấm & Menu chọn Filter (Interactive Controller)** tự động cập nhật trạng thái và bảo vệ quyền điều khiển theo kênh thoại.
 - 💾 **Tự động lưu & khôi phục phiên phát (`SessionPersistence`)**: Lưu hàng đợi định kỳ và khi tắt bot, tự động vào lại phòng phát tiếp khi bot khởi động lại.
@@ -53,7 +53,7 @@ Sao chép file `.env.example` thành `.env` và điền Token của bạn:
 cp .env.example .env
 ```
 
-Tối thiểu bạn chỉ cần điền `DISCORD_TOKEN` trong `.env` (Bot sẽ tự nhận diện `CLIENT_ID` và đăng ký toàn bộ 26 Slash Commands khi khởi động nếu `AUTO_DEPLOY_COMMANDS=true`):
+Tối thiểu bạn chỉ cần điền `DISCORD_TOKEN` trong `.env` (Bot sẽ tự nhận diện `CLIENT_ID` và đăng ký toàn bộ 27 Slash Commands khi khởi động nếu `AUTO_DEPLOY_COMMANDS=true`):
 
 ```env
 DISCORD_TOKEN=your_discord_bot_token_here
@@ -92,6 +92,7 @@ docker run -d --name ziplayer-bot --env-file .env --restart unless-stopped zipla
 | `/play [query] [file]` | `!play`, `!p` | Phát nhạc theo tên, URL (YT/SC/Spotify/MP3) hoặc file đính kèm |
 | `/playnext <query>` | `!playnext`, `!pn` | Chèn bài hát lên đầu hàng đợi (phát ngay kế tiếp) |
 | `/tts <text>` | `!tts`, `!say` | Đọc văn bản thành tiếng nói trong kênh thoại |
+| `/247 on`, `/247 off`, `/247 status` | `!247 on`, `!247 off`, `!247 status` | Treo bot trong phòng thoại, tắt chế độ 24/7 hoặc xem trạng thái |
 | `/pause` / `/resume` | `!pause` / `!resume` | Tạm dừng / Tiếp tục phát nhạc |
 | `/skip [to]` | `!skip [vị trí]`, `!s` | Bỏ qua bài hiện tại hoặc nhảy thẳng tới bài thứ `N` |
 | `/previous` | `!prev`, `!back` | Quay lại phát bài trước đó trong lịch sử |
@@ -112,6 +113,16 @@ docker run -d --name ziplayer-bot --env-file .env --restart unless-stopped zipla
 | `/mirror <leader_id\|off>` | `!mirror <id\|off>` | Đồng bộ luồng nhạc thời gian thực từ Server chính |
 | `/stats` / `/help` | `!stats` / `!help` | Xem thông số ZiPlayer Engine & bảng hướng dẫn |
 
+### Treo bot trong phòng thoại 24/7
+
+1. Vào phòng thoại muốn treo bot, sau đó dùng `/247 on`.
+2. Bot ở lại khi hết nhạc hoặc không còn người; nếu kết nối bị ngắt, bot sẽ thử vào lại. Khi bot khởi động lại, bot đọc phòng đã lưu và kết nối lại.
+3. Dùng `/247 status` để xem trạng thái; `/247 off` để tắt chế độ treo. `/leave` tắt 24/7 và cho bot rời ngay.
+
+Nếu dùng lệnh tin nhắn, có thể dùng `!247 on`, `!247 off`, `!247 status` hoặc `@Bot 247 on`.
+
+Cấu hình phòng được lưu tại `data/voice-24-7.json` (cùng thư mục với `PERSISTENCE_FILE`), độc lập với hàng đợi. Nếu `PERSISTENCE_FILE` trùng tên `voice-24-7.json`, cấu hình phòng được lưu vào `voice-24-7.json.rooms.json` để tránh ghi đè. Để khôi phục sau khi triển khai lại, host phải giữ thư mục này qua các lần redeploy; nếu dữ liệu bị xóa, cần bật `/247 on` lại. Bot chỉ có thể online liên tục khi host đang chạy và kết nối Discord hoạt động.
+
 ---
 
 ## 🗂️ Cấu trúc dự án
@@ -120,13 +131,14 @@ docker run -d --name ziplayer-bot --env-file .env --restart unless-stopped zipla
 ├── src/
 │   ├── index.ts                     # Điểm khởi chạy chính & quản lý vòng đời tiến trình
 │   ├── config.ts                    # Đọc cấu hình .env & tự động ánh xạ FFmpeg binary
-│   ├── deploy-commands.ts           # Đăng ký 26 Slash Commands lên Discord API
+│   ├── deploy-commands.ts           # Đăng ký 27 Slash Commands lên Discord API
 │   ├── core/
 │   │   ├── musicEngine.ts           # Quản lý ZiPlayer, Plugins, Extensions & Discord Events
 │   │   ├── persistence.ts           # Tự động lưu & khôi phục phiên nhạc qua JSON nguyên tử
+│   │   ├── alwaysOnStore.ts         # Lưu phòng thoại 24/7 riêng cho từng server
 │   │   └── exporter.ts              # Xuất luồng nhạc ZiPlayer sang MP3 qua FFmpeg
 │   ├── handlers/
-│   │   ├── slashDefinitions.ts      # Định nghĩa cấu trúc 26 Slash Commands
+│   │   ├── slashDefinitions.ts      # Định nghĩa cấu trúc 27 Slash Commands
 │   │   ├── musicActions.ts          # Xử lý nghiệp vụ thống nhất & kiểm tra quyền kênh thoại
 │   │   ├── interactionHandler.ts    # Xử lý Slash, Autocomplete, Nút bấm & Select Menu
 │   │   └── prefixHandler.ts         # Xử lý lệnh Prefix văn bản (!play, !skip...)

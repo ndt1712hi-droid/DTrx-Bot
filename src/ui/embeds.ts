@@ -414,6 +414,7 @@ export function buildHelpEmbed(prefix: string) {
 					`\`/play <tên/link>\` hoặc \`${prefix}play <tên/link>\` — Phát nhạc từ **YouTube, SoundCloud, Spotify, Link MP3** hoặc đính kèm file nhạc`,
 					`\`/playnext <tên/link>\` hoặc \`${prefix}playnext\` — Chèn bài hát phát ngay kế tiếp`,
 					`\`/tts <văn bản>\` hoặc \`${prefix}tts <văn bản>\` — Đọc giọng nói Tiếng Việt/Anh trên kênh thoại (chế độ ngắt thông minh)`,
+					`\`/247 on\` — Treo bot trong phòng thoại; \`/247 off\` — tắt; \`/247 status\` — xem trạng thái`,
 				].join("\n"),
 			},
 			{

@@ -35,6 +35,13 @@ export function buildSlashCommands(): RESTPostAPIChatInputApplicationCommandsJSO
 				opt.setName("text").setDescription("Nội dung cần đọc trên kênh thoại").setRequired(true).setMaxLength(300),
 			),
 
+		new SlashCommandBuilder()
+			.setName("247")
+			.setDescription("Treo bot 24/7 trong kênh thoại, kể cả khi không phát nhạc")
+			.addSubcommand((cmd) => cmd.setName("on").setDescription("Bật 24/7 trong kênh thoại bạn đang ở"))
+			.addSubcommand((cmd) => cmd.setName("off").setDescription("Tắt chế độ treo 24/7"))
+			.addSubcommand((cmd) => cmd.setName("status").setDescription("Xem trạng thái phòng thoại 24/7")),
+
 		new SlashCommandBuilder().setName("pause").setDescription("Tạm dừng bài hát đang phát"),
 
 		new SlashCommandBuilder().setName("resume").setDescription("Tiếp tục phát bài hát đang tạm dừng"),

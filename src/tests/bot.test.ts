@@ -4,11 +4,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { GatewayIntentBits, MessageFlags } from "discord.js";
+import { VoiceConnectionStatus } from "@discordjs/voice";
+import { ChannelType, Collection, GatewayIntentBits, MessageFlags } from "discord.js";
 import { PREDEFINED_FILTERS, type Track } from "ziplayer";
 import { assertBotCredentials, loadConfig, resolveAndBindFfmpeg } from "../config.js";
 import { exportTrackToMp3Buffer } from "../core/exporter.js";
 import { SessionPersistence } from "../core/persistence.js";
+import { AlwaysOnVoiceStore } from "../core/alwaysOnStore.js";
 import { buildSlashCommands } from "../handlers/slashDefinitions.js";
 import { createBotInstance } from "../index.js";
 import { resolveInteractionGuildAndMember } from "../handlers/interactionHandler.js";
@@ -28,6 +30,19 @@ import {
 	parseVoiceCommand,
 	sanitizeFilename,
 } from "../utils/format.js";
+
+// ZiPlayer eagerly fetches Edge voices in every bot constructor. Keep unit
+// tests deterministic and offline; playback-specific network paths are mocked
+// separately in the tests that exercise them.
+const nativeFetch = globalThis.fetch;
+globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+	const url = input instanceof Request ? input.url : String(input);
+	if (url.startsWith("https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list")) {
+		return Promise.resolve(new Response("[]", { status: 200, headers: { "content-type": "application/json" } }));
+	}
+	return nativeFetch(input, init);
+}) as typeof fetch;
+test.after(() => { globalThis.fetch = nativeFetch; });
 
 function createSampleWavBuffer(durationMs = 400, sampleRate = 44100): Buffer {
 	const numSamples = Math.floor((sampleRate * durationMs) / 1000);
@@ -132,14 +147,15 @@ test("Vietnamese and English voice command parser enforces wake words", () => {
 	assert.deepEqual(parseVoiceCommand("bot lặp bài", ["zi", "bot"]), { type: "loop", mode: "track" });
 });
 
-test("Slash command definitions build all 26 commands cleanly", () => {
+test("Slash command definitions build all 27 commands cleanly", () => {
 	const commands = buildSlashCommands();
-	assert.equal(commands.length, 26);
+	assert.equal(commands.length, 27);
 	const names = new Set(commands.map((c) => c.name));
 	for (const expected of [
 		"play",
 		"playnext",
 		"tts",
+		"247",
 		"pause",
 		"resume",
 		"skip",
@@ -164,11 +180,10 @@ test("Slash command definitions build all 26 commands cleanly", () => {
 		"stats",
 		"help",
 	]) {
-		if (commands.some((c) => c.name === expected)) {
-			assert.ok(names.has(expected));
-		}
+		assert.ok(names.has(expected), `Missing slash command: ${expected}`);
 	}
-	assert.ok(commands.length >= 21);
+	const stay = commands.find((command) => command.name === "247");
+	assert.deepEqual(stay?.options?.map((option) => option.name), ["on", "off", "status"]);
 });
 
 test("ZiMusicBotEngine initializes all 5 plugins, isolates per-guild extensions, and builds rich embeds", async () => {
@@ -776,6 +791,546 @@ test("failed TTS audio never falls back to YouTube or SoundCloud music", async (
 		assert.equal(stream, null, "Unavailable TTS must fail rather than returning music");
 		assert.equal(unrelatedSearches, 0, "Music fallbacks must not search the TTS title");
 	} finally {
+		await engine.shutdown();
+		await client.destroy();
+	}
+});
+
+function mockVoiceRoom(guildId = "guild-247", voiceChannelId = "voice-247") {
+	const members = new Collection<string, { user: { bot: boolean } }>();
+	const room: any = {
+		id: voiceChannelId,
+		guildId,
+		type: ChannelType.GuildVoice,
+		members,
+		isVoiceBased: () => true,
+	};
+	const channels = new Collection<string, any>([[voiceChannelId, room]]);
+	const guild: any = {
+		id: guildId,
+		members: { me: null },
+		channels: { cache: channels, fetch: async (id: string) => channels.get(id) ?? null },
+	};
+	room.guild = guild;
+	return { room, guild };
+}
+
+function fakeReadyConnection(channelId: string) {
+	return {
+		joinConfig: { channelId },
+		state: { status: VoiceConnectionStatus.Ready },
+		destroy: () => undefined,
+	} as any;
+}
+
+test("24/7 storage serializes changes, restores them, and never overwrites corrupt data", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-stay-store-"));
+	const file = path.join(dir, "voice-24-7.json");
+	try {
+		const store = new AlwaysOnVoiceStore(file);
+		await store.ready();
+		await Promise.all([
+			store.set({ guildId: "g1", voiceChannelId: "v1", textChannelId: "t1" }),
+			store.set({ guildId: "g2", voiceChannelId: "v2", textChannelId: "t2" }),
+			store.remove("g1"),
+		]);
+		const restored = new AlwaysOnVoiceStore(file);
+		await restored.ready();
+		assert.deepEqual(restored.list(), [{ guildId: "g2", voiceChannelId: "v2", textChannelId: "t2" }]);
+		assert.equal(restored.isEnabled("g1"), false);
+		assert.equal(restored.isEnabled("g2"), true);
+		await restored.remove("g2");
+		const afterRemoval = new AlwaysOnVoiceStore(file);
+		await afterRemoval.ready();
+		assert.deepEqual(afterRemoval.list(), []);
+
+		await fs.writeFile(file, "not valid json", "utf8");
+		const corrupt = new AlwaysOnVoiceStore(file);
+		await assert.rejects(corrupt.ready(), /Không thể đọc cấu hình 24\/7/);
+		await assert.rejects(corrupt.set({ guildId: "g3", voiceChannelId: "v3", textChannelId: "t3" }));
+		assert.equal(await fs.readFile(file, "utf8"), "not valid json");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("24/7 cancels existing idle timers and prevents leaving an empty room", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-stay-idle-"));
+	const { client, engine } = createBotInstance({
+		DISCORD_TOKEN: "dummy_token_for_unit_test",
+		ENABLE_PERSISTENCE: "false",
+		PERSISTENCE_FILE: path.join(dir, "sessions.json"),
+		LEAVE_ON_END: "true",
+		LEAVE_ON_EMPTY: "true",
+		LEAVE_TIMEOUT_MS: "5000",
+	});
+	try {
+		const { room, guild } = mockVoiceRoom();
+		const target = { guildId: guild.id, voiceChannelId: room.id, textChannelId: "text-247" };
+		const player = await engine.getOrCreatePlayer(target);
+		const lifecycle = player.runtimeGraph.lifecycleController as any;
+		lifecycle.scheduleLeave("track-end");
+		assert.ok(lifecycle.leaveTimer, "Normal mode should schedule leave after a track");
+
+		client.emit("voiceStateUpdate", { guild, id: "human", channelId: room.id } as any,
+			{ guild, id: "human", channelId: null } as any);
+		assert.equal((engine as any).emptyChannelTimers.has(guild.id), true);
+		engine.ensureConnected = async (p, channel) => { p.connection = fakeReadyConnection(channel.id); };
+		await engine.enableAlwaysOnVoice(target, room);
+		assert.equal(lifecycle.leaveTimer, null, "Enabling 24/7 cancels ZiPlayer's existing leave timer");
+		assert.equal((engine as any).emptyChannelTimers.has(guild.id), false);
+		lifecycle.scheduleLeave("track-end");
+		lifecycle.scheduleLeave("queue-empty");
+		assert.equal(lifecycle.leaveTimer, null, "24/7 suppresses new automatic leave timers");
+		lifecycle.scheduleLeave("manual");
+		assert.ok(lifecycle.leaveTimer, "Explicit/manual lifecycle leave must remain available");
+		lifecycle.clearLeaveTimeout();
+		client.emit("voiceStateUpdate", { guild, id: "human", channelId: room.id } as any,
+			{ guild, id: "human", channelId: null } as any);
+		assert.equal((engine as any).emptyChannelTimers.has(guild.id), false);
+
+		assert.equal(await engine.disableAlwaysOnVoice(guild.id), true);
+		assert.ok(lifecycle.leaveTimer, "Disabling 24/7 restores the normal idle policy");
+		player.connection = null;
+	} finally {
+		await engine.shutdown();
+		await client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("24/7 restores an empty room after restart and retries a disconnected player", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-stay-reconnect-"));
+	const file = path.join(dir, "voice-24-7.json");
+	const seed = new AlwaysOnVoiceStore(file);
+	const { room, guild } = mockVoiceRoom();
+	await seed.set({ guildId: guild.id, voiceChannelId: room.id, textChannelId: "text-247" });
+	const { client, engine } = createBotInstance({
+		DISCORD_TOKEN: "dummy_token_for_unit_test",
+		ENABLE_PERSISTENCE: "false",
+		PERSISTENCE_FILE: path.join(dir, "sessions.json"),
+	});
+	try {
+		(client as any).isReady = () => true;
+		client.guilds.cache.set(guild.id, guild);
+		let connections = 0;
+		engine.ensureConnected = async (player, channel) => {
+			connections++;
+			player.connection = fakeReadyConnection(channel.id);
+		};
+		assert.equal(room.members.size, 0, "The test room starts empty");
+		assert.equal(await engine.startAlwaysOnVoice(), 1);
+		assert.equal(connections, 1, "Bot should enter the saved room even with no human listeners");
+		await engine.refreshAlwaysOnVoice();
+		assert.equal(connections, 1, "A healthy connection must not be reconnected unnecessarily");
+
+		let player = engine.manager.get(guild.id)!;
+		(player.connection as any).state.status = VoiceConnectionStatus.Disconnected;
+		await engine.refreshAlwaysOnVoice();
+		assert.equal(connections, 2, "A disconnected voice session should reconnect");
+		player.connection = null;
+		player.destroy();
+		await engine.refreshAlwaysOnVoice();
+		assert.equal(connections, 3, "A destroyed player should be recreated");
+		player = engine.manager.get(guild.id)!;
+		assert.equal(await engine.disableAlwaysOnVoice(guild.id), true);
+		player.connection = null;
+		await engine.refreshAlwaysOnVoice();
+		assert.equal(connections, 3, "Disabled 24/7 must not reconnect again");
+	} finally {
+		client.guilds.cache.delete(guild.id);
+		await engine.shutdown();
+		await client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("concurrent 24/7 on and off are serialized so the last command wins", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-stay-race-"));
+	const { client, engine } = createBotInstance({
+		DISCORD_TOKEN: "dummy_token_for_unit_test",
+		ENABLE_PERSISTENCE: "false",
+		PERSISTENCE_FILE: path.join(dir, "sessions.json"),
+	});
+	let releaseConnection: (() => void) | undefined;
+	let signalStarted: (() => void) | undefined;
+	const gate = new Promise<void>((resolve) => { releaseConnection = resolve; });
+	const started = new Promise<void>((resolve) => { signalStarted = resolve; });
+	try {
+		const { room, guild } = mockVoiceRoom();
+		engine.ensureConnected = async (player, channel) => {
+			signalStarted?.();
+			await gate;
+			player.connection = fakeReadyConnection(channel.id);
+		};
+		const enabling = engine.enableAlwaysOnVoice({ guildId: guild.id, voiceChannelId: room.id, textChannelId: "text-247" }, room);
+		await started;
+		const disabling = engine.disableAlwaysOnVoice(guild.id);
+		releaseConnection?.();
+		await enabling;
+		assert.equal(await disabling, true);
+		assert.equal(await engine.getAlwaysOnVoiceTarget(guild.id), undefined);
+		const player = engine.manager.get(guild.id);
+		if (player) player.connection = null;
+	} finally {
+		releaseConnection?.();
+		await engine.shutdown();
+		await client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("/leave disables 24/7 persistently instead of rejoining behind the user's back", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-stay-leave-"));
+	const { client, engine, actions } = createBotInstance({
+		DISCORD_TOKEN: "dummy_token_for_unit_test",
+		ENABLE_PERSISTENCE: "false",
+		PERSISTENCE_FILE: path.join(dir, "sessions.json"),
+	});
+	try {
+		const { room, guild } = mockVoiceRoom();
+		engine.ensureConnected = async (player, channel) => { player.connection = fakeReadyConnection(channel.id); };
+		await engine.enableAlwaysOnVoice({ guildId: guild.id, voiceChannelId: room.id, textChannelId: "text-247" }, room);
+		const replies: ReplyPayload[] = [];
+		const ctx: CommandContext = {
+			guild,
+			member: { voice: { channel: room }, guild } as any,
+			userId: "user-1",
+			textChannelId: "text-247",
+			defer: async () => undefined,
+			reply: async (payload) => { replies.push(payload); },
+		};
+		await actions.leave(ctx);
+		assert.equal(await engine.getAlwaysOnVoiceTarget(guild.id), undefined);
+		assert.ok(replies.at(-1)?.embeds?.[0].data.description?.includes("tắt 24/7"));
+		const disk = new AlwaysOnVoiceStore(path.join(dir, "voice-24-7.json"));
+		await disk.ready();
+		assert.equal(disk.isEnabled(guild.id), false);
+	} finally {
+		await engine.shutdown();
+		await client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("24/7 failed joins use bounded retries and stop retrying on shutdown", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-stay-retry-"));
+	const { room, guild } = mockVoiceRoom();
+	const seed = new AlwaysOnVoiceStore(path.join(dir, "voice-24-7.json"));
+	await seed.set({ guildId: guild.id, voiceChannelId: room.id, textChannelId: "text-247" });
+	const { client, engine } = createBotInstance({
+		DISCORD_TOKEN: "dummy_token_for_unit_test",
+		ENABLE_PERSISTENCE: "false",
+		PERSISTENCE_FILE: path.join(dir, "sessions.json"),
+	});
+	try {
+		(client as any).isReady = () => true;
+		client.guilds.cache.set(guild.id, guild);
+		let attempts = 0;
+		engine.ensureConnected = async (player, channel) => {
+			attempts++;
+			if (attempts === 1) throw new Error("simulated voice failure");
+			player.connection = fakeReadyConnection(channel.id);
+		};
+		await engine.startAlwaysOnVoice();
+		assert.equal(attempts, 1);
+		await engine.refreshAlwaysOnVoice();
+		assert.equal(attempts, 1, "Immediate retries must be throttled");
+		const backoff = (engine as any).reconnectBackoff.get(guild.id);
+		assert.equal(backoff.failures, 1);
+		assert.ok(backoff.retryAt > Date.now());
+		backoff.retryAt = 0;
+		await engine.refreshAlwaysOnVoice();
+		assert.equal(attempts, 2);
+		assert.equal((engine as any).reconnectBackoff.has(guild.id), false);
+		const player = engine.manager.get(guild.id);
+		if (player) player.connection = null;
+		await engine.shutdown();
+		await engine.refreshAlwaysOnVoice();
+		assert.equal(attempts, 2, "Shutdown prevents new reconnect attempts");
+	} finally {
+		client.guilds.cache.delete(guild.id);
+		await engine.shutdown();
+		await client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("voice connection logic reconnects a disconnected player and moves a ready connection", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-stay-connect-"));
+	const { client, engine } = createBotInstance({
+		DISCORD_TOKEN: "dummy_token_for_unit_test",
+		ENABLE_PERSISTENCE: "false",
+		PERSISTENCE_FILE: path.join(dir, "sessions.json"),
+	});
+	try {
+		const { room, guild } = mockVoiceRoom();
+		const player = await engine.getOrCreatePlayer({ guildId: guild.id, voiceChannelId: room.id, textChannelId: "text-247" });
+		let connects = 0;
+		player.connection = { ...fakeReadyConnection(room.id), state: { status: VoiceConnectionStatus.Disconnected } };
+		(player as any).connect = async () => {
+			connects++;
+			player.connection = fakeReadyConnection(room.id);
+		};
+		await engine.ensureConnected(player, room);
+		assert.equal(connects, 1, "A disconnected connection with the correct channel ID must be reconnected");
+
+		let rejoin: any;
+		(player.connection as any).joinConfig = { channelId: "old-room", selfDeaf: true, selfMute: false };
+		(player.connection as any).rejoin = (options: any) => { rejoin = options; return true; };
+		await engine.ensureConnected(player, room);
+		assert.deepEqual(rejoin, { channelId: room.id, selfDeaf: true, selfMute: false });
+		assert.equal(connects, 1, "Moving a ready connection should not recreate the player");
+		player.connection = null;
+	} finally {
+		await engine.shutdown();
+		await client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("slash and prefix 24/7 commands route their selected subcommand", async () => {
+	const { client, engine, actions } = createBotInstance({
+		DISCORD_TOKEN: "dummy_token_for_unit_test",
+		ENABLE_PERSISTENCE: "false",
+	});
+	try {
+		const modes: string[] = [];
+		actions.alwaysOnVoice = async (_ctx, mode) => { modes.push(mode ?? "status"); };
+		const interaction = createFakeSlashInteraction();
+		interaction.commandName = "247";
+		interaction.options = { getSubcommand: () => "on" };
+		interaction.guild = { id: "guild-1", members: { cache: new Map([["user-1", { id: "user-1" }]]) } };
+		const slashListener = client.listeners("interactionCreate")[0] as (value: unknown) => Promise<void>;
+		await slashListener(interaction);
+
+		const prefixListener = client.listeners("messageCreate")[0] as (value: unknown) => Promise<void>;
+		await prefixListener({
+			content: `${engine.config.prefix}247 off`,
+			author: { id: "user-1", bot: false },
+			guild: { id: "guild-1" },
+			member: { id: "user-1" },
+			channel: { id: "text-1", isSendable: () => true },
+			attachments: { size: 0 },
+		});
+		assert.deepEqual(modes, ["on", "off"]);
+		assert.equal(interaction.calls[0].method, "deferReply");
+	} finally {
+		await engine.shutdown();
+		await client.destroy();
+	}
+});
+
+test("explicit leave suppresses an in-flight playback-session restore", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-stay-session-race-"));
+	const { client, engine } = createBotInstance({
+		DISCORD_TOKEN: "dummy_token_for_unit_test",
+		ENABLE_PERSISTENCE: "true",
+		PERSISTENCE_FILE: path.join(dir, "sessions.json"),
+	});
+	let resolveSessions: ((value: any[]) => void) | undefined;
+	try {
+		const { room, guild } = mockVoiceRoom();
+		room.members.set("human", { user: { bot: false } });
+		client.guilds.cache.set(guild.id, guild);
+		let connects = 0;
+		engine.ensureConnected = async (player, channel) => {
+			connects++;
+			player.connection = fakeReadyConnection(channel.id);
+		};
+		await engine.enableAlwaysOnVoice({ guildId: guild.id, voiceChannelId: room.id, textChannelId: "text-247" }, room);
+		engine.persistence.loadValidSessions = async () => new Promise((resolve) => { resolveSessions = resolve; });
+		engine.persistence.clearFile = async () => undefined;
+		const restoring = engine.restorePersistedSessions();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.deepEqual(await engine.leaveVoice(guild.id), { disabled: true, left: true });
+		resolveSessions?.([{
+			guildId: guild.id,
+			voiceChannelId: room.id,
+			textChannelId: "text-247",
+			currentTrack: sampleTrack(1),
+			upcomingTracks: [],
+			volume: 50,
+			loopMode: "off",
+			autoPlay: false,
+			activeFilters: [],
+			savedAt: Date.now(),
+		}]);
+		assert.equal(await restoring, 0);
+		assert.equal(connects, 1, "Old playback must not reconnect after /leave");
+		assert.equal(await engine.getAlwaysOnVoiceTarget(guild.id), undefined);
+	} finally {
+		resolveSessions?.([]);
+		client.guilds.cache.delete("guild-247");
+		await engine.shutdown();
+		await client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("24/7 action validates voice access and reports on, status, and off", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-stay-actions-"));
+	const { client, engine, actions } = createBotInstance({
+		DISCORD_TOKEN: "dummy_token_for_unit_test",
+		ENABLE_PERSISTENCE: "false",
+		PERSISTENCE_FILE: path.join(dir, "sessions.json"),
+	});
+	try {
+		const { room, guild } = mockVoiceRoom();
+		engine.ensureConnected = async (player, channel) => { player.connection = fakeReadyConnection(channel.id); };
+		const replies: ReplyPayload[] = [];
+		const ctx: CommandContext = {
+			guild,
+			member: { voice: { channel: null }, guild } as any,
+			userId: "user-1",
+			textChannelId: "text-247",
+			defer: async () => undefined,
+			reply: async (payload) => { replies.push(payload); },
+		};
+		await actions.alwaysOnVoice(ctx, "on");
+		assert.ok(replies.at(-1)?.embeds?.[0].data.description?.includes("tham gia"));
+		assert.equal(await engine.getAlwaysOnVoiceTarget(guild.id), undefined);
+		(ctx.member as any).voice.channel = room;
+		await actions.alwaysOnVoice(ctx, "on");
+		assert.ok(replies.at(-1)?.embeds?.[0].data.description?.includes("Đã bật"));
+		assert.equal((await engine.getAlwaysOnVoiceTarget(guild.id))?.voiceChannelId, room.id);
+		await actions.alwaysOnVoice(ctx, "status");
+		assert.ok(replies.at(-1)?.embeds?.[0].data.description?.includes("Bot đang kết nối"));
+		await actions.alwaysOnVoice(ctx, "off");
+		assert.ok(replies.at(-1)?.embeds?.[0].data.description?.includes("Đã tắt"));
+		assert.equal(await engine.getAlwaysOnVoiceTarget(guild.id), undefined);
+		const player = engine.manager.get(guild.id);
+		if (player) player.connection = null;
+	} finally {
+		await engine.shutdown();
+		await client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("turning 24/7 off restores the configured empty-room policy", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-stay-off-empty-"));
+	const { client, engine } = createBotInstance({
+		DISCORD_TOKEN: "dummy_token_for_unit_test",
+		ENABLE_PERSISTENCE: "false",
+		PERSISTENCE_FILE: path.join(dir, "sessions.json"),
+		LEAVE_ON_END: "false",
+		LEAVE_ON_EMPTY: "true",
+	});
+	try {
+		const { room, guild } = mockVoiceRoom();
+		client.guilds.cache.set(guild.id, guild);
+		engine.ensureConnected = async (player, channel) => { player.connection = fakeReadyConnection(channel.id); };
+		await engine.enableAlwaysOnVoice({ guildId: guild.id, voiceChannelId: room.id, textChannelId: "text-247" }, room);
+		const player = engine.manager.get(guild.id)!;
+		await engine.disableAlwaysOnVoice(guild.id);
+		assert.equal((player.runtimeGraph.lifecycleController as any).leaveTimer, null, "LEAVE_ON_END=false must be respected");
+		assert.equal((engine as any).emptyChannelTimers.has(guild.id), true, "Empty-room timeout must resume even without a new voice event");
+		player.connection = null;
+	} finally {
+		client.guilds.cache.delete("guild-247");
+		await engine.shutdown();
+		await client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("old playback is not restored into a room different from the saved 24/7 target", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-stay-other-room-"));
+	const { client, engine } = createBotInstance({
+		DISCORD_TOKEN: "dummy_token_for_unit_test",
+		ENABLE_PERSISTENCE: "true",
+		PERSISTENCE_FILE: path.join(dir, "sessions.json"),
+	});
+	try {
+		const { room, guild } = mockVoiceRoom();
+		const old = mockVoiceRoom(guild.id, "old-room").room;
+		old.guild = guild;
+		old.members.set("human", { user: { bot: false } });
+		guild.channels.cache.set(old.id, old);
+		client.guilds.cache.set(guild.id, guild);
+		let connections = 0;
+		engine.ensureConnected = async (player, channel) => {
+			connections++;
+			player.connection = fakeReadyConnection(channel.id);
+		};
+		await engine.enableAlwaysOnVoice({ guildId: guild.id, voiceChannelId: room.id, textChannelId: "text-247" }, room);
+		engine.persistence.loadValidSessions = async () => [{
+			guildId: guild.id, voiceChannelId: old.id, textChannelId: "text-247",
+			currentTrack: sampleTrack(1), upcomingTracks: [], volume: 50, loopMode: "off",
+			autoPlay: false, activeFilters: [], savedAt: Date.now(),
+		}];
+		engine.persistence.clearFile = async () => undefined;
+		assert.equal(await engine.restorePersistedSessions(), 0);
+		assert.equal(connections, 1);
+		assert.equal(engine.manager.get(guild.id)?.connection?.joinConfig.channelId, room.id);
+		engine.manager.get(guild.id)!.connection = null;
+	} finally {
+		client.guilds.cache.delete("guild-247");
+		await engine.shutdown();
+		await client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("a failed 24/7 disk write does not activate the in-memory setting", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-stay-write-failure-"));
+	try {
+		const file = path.join(dir, "voice-24-7.json");
+		const store = new AlwaysOnVoiceStore(file);
+		await store.ready();
+		// Replacing a directory with the temp file must fail on all supported platforms.
+		await fs.mkdir(file);
+		await assert.rejects(store.set({ guildId: "g1", voiceChannelId: "v1", textChannelId: "t1" }));
+		assert.equal(store.isEnabled("g1"), false);
+		assert.equal((await fs.stat(file)).isDirectory(), true);
+		assert.deepEqual(await fs.readdir(dir), ["voice-24-7.json"], "Temporary files should be cleaned up");
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("24/7 storage does not collide with a custom playback-session filename", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-stay-path-collision-"));
+	const sessionFile = path.join(dir, "voice-24-7.json");
+	await fs.writeFile(sessionFile, "[]", "utf8");
+	const { client, engine } = createBotInstance({
+		DISCORD_TOKEN: "dummy_token_for_unit_test",
+		ENABLE_PERSISTENCE: "false",
+		PERSISTENCE_FILE: sessionFile,
+	});
+	try {
+		const { room, guild } = mockVoiceRoom();
+		engine.ensureConnected = async (player, channel) => { player.connection = fakeReadyConnection(channel.id); };
+		await engine.enableAlwaysOnVoice({ guildId: guild.id, voiceChannelId: room.id, textChannelId: "text-247" }, room);
+		assert.equal(await fs.readFile(sessionFile, "utf8"), "[]");
+		const rooms = JSON.parse(await fs.readFile(`${sessionFile}.rooms.json`, "utf8"));
+		assert.equal(rooms[0].voiceChannelId, room.id);
+		engine.manager.get(guild.id)!.connection = null;
+	} finally {
+		await engine.shutdown();
+		await client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("an unavailable Edge voice list does not reject during bot startup", async () => {
+	const savedFetch = globalThis.fetch;
+	const savedWarn = console.warn;
+	let warnings = 0;
+	globalThis.fetch = (async () => new Response("temporarily unavailable", { status: 503 })) as typeof fetch;
+	console.warn = () => { warnings++; };
+	const { client, engine } = createBotInstance({
+		DISCORD_TOKEN: "dummy_token_for_unit_test",
+		ENABLE_PERSISTENCE: "false",
+	});
+	try {
+		await assert.doesNotReject(engine.ttsPlugin.init());
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.ok(warnings >= 1, "The outage should be logged and handled");
+	} finally {
+		globalThis.fetch = savedFetch;
+		console.warn = savedWarn;
 		await engine.shutdown();
 		await client.destroy();
 	}

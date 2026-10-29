@@ -1,3 +1,4 @@
+import { VoiceConnectionStatus } from "@discordjs/voice";
 import {
 	AttachmentBuilder,
 	ChannelType,
@@ -313,6 +314,84 @@ export class MusicCommandActions {
 		}
 	}
 
+	async alwaysOnVoice(ctx: CommandContext, modeInput = "status"): Promise<void> {
+		const mode = modeInput.trim().toLowerCase();
+		if (["status", "trangthai", "trạng thái", ""].includes(mode)) {
+			let target;
+			try {
+				target = await this.engine.getAlwaysOnVoiceTarget(ctx.guild.id);
+			} catch (err) {
+				console.error("[24/7] Không thể đọc cấu hình:", err instanceof Error ? err.message : err);
+				await ctx.reply({ embeds: [infoEmbed("❌ Không thể đọc trạng thái 24/7. Hãy kiểm tra log Botkeep.", COLORS.ERROR)], ephemeral: true });
+				return;
+			}
+			if (!target) {
+				await ctx.reply({ embeds: [infoEmbed("💤 Chế độ 24/7 đang **tắt**. Vào phòng thoại và dùng `/247 on` để bật.", COLORS.INFO)] });
+				return;
+			}
+			const connection = this.engine.manager.get(ctx.guild.id)?.connection;
+			const actualChannelId = ctx.guild.members.me?.voice?.channelId;
+			const connected = connection?.joinConfig.channelId === target.voiceChannelId &&
+				connection.state?.status === VoiceConnectionStatus.Ready &&
+				(!actualChannelId || actualChannelId === target.voiceChannelId);
+			await ctx.reply({
+				embeds: [infoEmbed(`🔁 24/7 đang **bật** tại <#${target.voiceChannelId}>. ${connected ? "Bot đang kết nối." : "Bot chưa kết nối và sẽ tự thử lại."}`, COLORS.INFO)],
+			});
+			return;
+		}
+
+		if (["off", "tat", "tắt"].includes(mode)) {
+			await ctx.defer();
+			let removed: boolean;
+			try {
+				removed = await this.engine.disableAlwaysOnVoice(ctx.guild.id);
+			} catch (err) {
+				console.error("[24/7] Không thể tắt chế độ:", err instanceof Error ? err.message : err);
+				await ctx.reply({ embeds: [infoEmbed("❌ Không thể lưu việc tắt 24/7. Hãy kiểm tra log Botkeep và thử lại.", COLORS.ERROR)], ephemeral: true });
+				return;
+			}
+			await ctx.reply({
+				embeds: [infoEmbed(
+					removed
+						? "⏹️ Đã tắt chế độ 24/7. Bot sẽ rời theo cài đặt thông thường; dùng `/leave` để rời ngay."
+						: "💤 Chế độ 24/7 vốn đang tắt.",
+					COLORS.INFO,
+				)],
+			});
+			return;
+		}
+
+		if (!["on", "bat", "bật"].includes(mode)) {
+			await ctx.reply({ embeds: [infoEmbed("❌ Dùng `/247 on`, `/247 off` hoặc `/247 status`.", COLORS.ERROR)], ephemeral: true });
+			return;
+		}
+
+		const existing = this.engine.manager.get(ctx.guild.id);
+		const access = validateMemberVoiceAccess(ctx.member, existing);
+		if (!access.ok) {
+			await ctx.reply({ embeds: [infoEmbed(access.reason, COLORS.ERROR)], ephemeral: true });
+			return;
+		}
+		await ctx.defer();
+		try {
+			await this.engine.enableAlwaysOnVoice({
+				guildId: ctx.guild.id,
+				voiceChannelId: access.voiceChannel.id,
+				textChannelId: ctx.textChannelId,
+			}, access.voiceChannel);
+			await ctx.reply({
+				embeds: [infoEmbed(`🔁 Đã bật **24/7** tại <#${access.voiceChannel.id}>. Bot sẽ ở lại khi hết nhạc hoặc phòng trống và thử vào lại khi bị ngắt.`, COLORS.PLAYING)],
+			});
+		} catch (err) {
+			console.error(`[24/7] Không thể bật trong server ${ctx.guild.id}:`, err instanceof Error ? err.message : err);
+			const saved = await this.engine.getAlwaysOnVoiceTarget(ctx.guild.id).catch(() => undefined);
+			const message = saved?.voiceChannelId === access.voiceChannel.id
+				? "⚠️ Đã lưu chế độ 24/7 nhưng bot chưa vào được phòng. Kiểm tra quyền Xem kênh/Kết nối và log; bot sẽ thử lại."
+				: "❌ Không thể lưu hoặc bật chế độ 24/7. Hãy kiểm tra log Botkeep và thử lại.";
+			await ctx.reply({ embeds: [infoEmbed(message, COLORS.ERROR)], ephemeral: true });
+		}
+	}
+
 	async pause(ctx: CommandContext): Promise<void> {
 		const player = this.getActivePlayerOrReply(ctx);
 		if (!player) return;
@@ -437,23 +516,37 @@ export class MusicCommandActions {
 	}
 
 	async leave(ctx: CommandContext): Promise<void> {
-		const player = this.engine.manager.get(ctx.guild.id);
-		if (!player || player.destroyed) {
+		const existing = this.engine.manager.get(ctx.guild.id);
+		if (existing && !existing.destroyed) {
+			const access = validateMemberVoiceAccess(ctx.member, existing);
+			if (!access.ok) {
+				await ctx.reply({ embeds: [infoEmbed(access.reason, COLORS.ERROR)], ephemeral: true });
+				return;
+			}
+		}
+
+		await ctx.defer();
+		// Disable 24/7 under the same per-guild lock used by reconnection, so an
+		// in-flight retry cannot immediately bring the bot back after /leave.
+		let result: { disabled: boolean; left: boolean };
+		try {
+			result = await this.engine.leaveVoice(ctx.guild.id);
+		} catch (err) {
+			console.error("[24/7] Không thể tắt trước khi rời voice:", err instanceof Error ? err.message : err);
+			await ctx.reply({ embeds: [infoEmbed("❌ Không thể lưu việc tắt 24/7; bot chưa rời. Hãy kiểm tra log Botkeep.", COLORS.ERROR)], ephemeral: true });
+			return;
+		}
+		const { disabled, left } = result;
+		if (!left && !disabled) {
 			await ctx.reply({
 				embeds: [infoEmbed("❌ Bot hiện không kết nối kênh thoại nào trong Server!", COLORS.ERROR)],
 				ephemeral: true,
 			});
 			return;
 		}
-
-		const access = validateMemberVoiceAccess(ctx.member, player);
-		if (!access.ok) {
-			await ctx.reply({ embeds: [infoEmbed(access.reason, COLORS.ERROR)], ephemeral: true });
-			return;
-		}
-
-		player.destroy();
-		await ctx.reply({ embeds: [infoEmbed("👋 Đã ngắt kết nối và rời khỏi kênh thoại!", COLORS.INFO)] });
+		await ctx.reply({
+			embeds: [infoEmbed(disabled ? "👋 Đã tắt 24/7 và rời khỏi kênh thoại!" : "👋 Đã ngắt kết nối và rời khỏi kênh thoại!", COLORS.INFO)],
+		});
 	}
 
 	async nowPlaying(ctx: CommandContext): Promise<void> {
