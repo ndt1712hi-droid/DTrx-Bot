@@ -40,9 +40,21 @@ export function registerPrefixHandler(engine: ZiMusicBotEngine, actions: MusicCo
 	engine.client.on("messageCreate", async (message: Message) => {
 		try {
 			if (message.author.bot || !message.guild) return;
-			if (!message.content.startsWith(prefix)) return;
 
-			const raw = message.content.slice(prefix.length).trim();
+			let raw: string | null = null;
+			const botId = engine.client.user?.id;
+			const mentionMatch = botId
+				? message.content.match(new RegExp(`^<@!?${botId}>\\s*(.*)$`, "s"))
+				: null;
+
+			if (message.content.startsWith(prefix)) {
+				raw = message.content.slice(prefix.length).trim();
+			} else if (mentionMatch) {
+				raw = mentionMatch[1].trim();
+			} else {
+				return;
+			}
+
 			if (!raw && message.attachments.size === 0) return;
 
 			const args = raw ? raw.split(/\s+/) : [];

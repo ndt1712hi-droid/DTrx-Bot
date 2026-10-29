@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
+import { GatewayIntentBits } from "discord.js";
 import { PREDEFINED_FILTERS, type Track } from "ziplayer";
 import { assertBotCredentials, loadConfig, resolveAndBindFfmpeg } from "../config.js";
 import { exportTrackToMp3Buffer } from "../core/exporter.js";
@@ -377,5 +378,25 @@ test("Voice access boundary rejects members outside voice channel or in a differ
 		if (p) p.connection = null;
 		await engine.shutdown();
 		await client.destroy();
+	}
+});
+
+test("Free-tier lowPerformance profile & automatic MessageContent fallback intent mode", async () => {
+	const fallback = createBotInstance(
+		{ DISCORD_TOKEN: "dummy_token_for_unit_test", ENABLE_PERSISTENCE: "false" },
+		{ includeMessageContentIntent: false },
+	);
+
+	try {
+		assert.equal(fallback.config.lowPerformance, true, "lowPerformance should default to true for free-tier hosts");
+		assert.equal(
+			fallback.client.options.intents.has(GatewayIntentBits.MessageContent),
+			false,
+			"Fallback mode must omit privileged MessageContent intent",
+		);
+		assert.equal(fallback.client.options.intents.has(GatewayIntentBits.GuildVoiceStates), true);
+	} finally {
+		await fallback.engine.shutdown();
+		await fallback.client.destroy();
 	}
 });

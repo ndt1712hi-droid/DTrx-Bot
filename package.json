@@ -1,13 +1,13 @@
 {
   "name": "ziplayer-discord-bot",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
-  "description": "Full-featured Discord Music Bot powered by ZiPlayer (Slash + Prefix commands, Interactive Controls, 36 FFmpeg Filters, Synced Lyrics, TTS, Voice STT, Queue Management, Auto-Recovery & Session Persistence)",
+  "description": "Lightweight, full-featured Discord Music Bot powered by ZiPlayer — optimized for Botkeep Free Tier & VPS",
   "main": "lib/index.js",
   "scripts": {
     "build": "tsc",
     "start": "node lib/index.js",
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsc --watch",
     "deploy": "node lib/deploy-commands.js",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test lib/tests/*.test.js"
@@ -27,7 +27,9 @@
   },
   "devDependencies": {
     "@types/node": "^20.19.0",
-    "tsx": "^4.19.4",
     "typescript": "^5.8.3"
+  },
+  "allowScripts": {
+    "ffmpeg-static": true
   }
 }

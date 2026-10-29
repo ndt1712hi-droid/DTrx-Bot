@@ -55,9 +55,9 @@ export class ZiMusicBotEngine {
 			extensions: globalExtensions,
 			extractorTimeout: config.extractorTimeoutMs,
 			autoCleanup: true,
-			cleanupInterval: 120_000,
+			cleanupInterval: 90_000,
 			enableSearchCache: true,
-			enableStatsCollection: true,
+			enableStatsCollection: !config.lowPerformance,
 			debugLevel: config.debugLevel,
 		});
 
@@ -156,6 +156,7 @@ export class ZiMusicBotEngine {
 			extractorTimeout: this.config.extractorTimeoutMs,
 			ffmpegPath: this.config.ffmpegPath,
 			lowPerformance: this.config.lowPerformance,
+			maxStreamStore: this.config.lowPerformance ? 2 : 6,
 			extensions,
 			tts: {
 				createPlayer: true,
@@ -164,16 +165,17 @@ export class ZiMusicBotEngine {
 				maxTimeTts: this.config.ttsMaxTimeMs,
 			},
 			preload: {
-				enabled: true,
+				enabled: !this.config.lowPerformance,
 				autoDisableInLowPerformance: true,
 			},
 			crossfade: {
-				autoEnable: true,
+				enabled: this.config.lowPerformance ? false : undefined,
+				autoEnable: !this.config.lowPerformance,
 				autoDisableInLowPerformance: true,
 				durationMs: this.config.crossfadeDurationMs,
 			},
 			smartTransition: {
-				enabled: true,
+				enabled: !this.config.lowPerformance,
 				genreAware: true,
 				beatAlign: true,
 				baseDurationMs: this.config.crossfadeDurationMs,
