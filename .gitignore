@@ -12,3 +12,5 @@ data/
 .netrc
 .bash*
 .profile
+uploads/
+huong_dan_*.png

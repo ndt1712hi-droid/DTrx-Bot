@@ -7,7 +7,13 @@ import {
 	type SendableChannels,
 	type VoiceBasedChannel,
 } from "discord.js";
-import { PlayerManager, type BaseExtension, type Player, type Track } from "ziplayer";
+import {
+	PlayerManager,
+	type BaseExtension,
+	type BasePlugin,
+	type Player,
+	type Track,
+} from "ziplayer";
 import { AttachmentsPlugin, SoundCloudPlugin, SpotifyPlugin, TTSPlugin, YouTubePlugin } from "@ziplayer/plugin";
 import { AiAutoplayExtension, lavalinkExt, lyricsExt, voiceExt } from "@ziplayer/extension";
 import type { BotConfig, LyricsResult, PlayerUserData } from "../types/bot.js";
@@ -19,11 +25,33 @@ import {
 import { formatDuration, parseVoiceCommand, truncate } from "../utils/format.js";
 import { SessionPersistence } from "./persistence.js";
 
+/**
+ * Upstream `@ziplayer/plugin` extractors (`YouTubePlugin`, `SoundCloudPlugin`) implement
+ * `canHandle(query)` properly (returning `false` for `tts:`, `spotify:`, etc.), but their
+ * `.search(query)` methods do not call `this.canHandle(query)` first, and `PluginManager`
+ * runs `.search()` on all plugins in parallel. Wrapping `.search()` with `canHandle` prevents
+ * YouTube/SoundCloud from hijacking `tts:` queries or foreign platform URLs.
+ */
+function guardPluginSearch<T extends BasePlugin>(plugin: T, priorityOverride?: number): T {
+	if (priorityOverride !== undefined) {
+		plugin.priority = priorityOverride;
+	}
+	const originalSearch = plugin.search.bind(plugin);
+	plugin.search = async (query: string, requestedBy: string, signal?: AbortSignal) => {
+		if (typeof plugin.canHandle === "function" && !plugin.canHandle(query)) {
+			return { tracks: [] };
+		}
+		return originalSearch(query, requestedBy, signal);
+	};
+	return plugin;
+}
+
 export class ZiMusicBotEngine {
 	public readonly client: Client;
 	public readonly config: BotConfig;
 	public readonly manager: PlayerManager;
 	public readonly persistence: SessionPersistence;
+	public readonly ttsPlugin: TTSPlugin;
 
 	private readonly refreshTimers = new Map<string, NodeJS.Timeout>();
 	private readonly emptyChannelTimers = new Map<string, NodeJS.Timeout>();
@@ -44,13 +72,22 @@ export class ZiMusicBotEngine {
 			);
 		}
 
+		this.ttsPlugin = guardPluginSearch(new TTSPlugin({ defaultLang: config.ttsLang }), 100);
+		const attachmentsPlugin = guardPluginSearch(
+			new AttachmentsPlugin({ maxFileSize: 25 * 1024 * 1024 }),
+			90,
+		);
+		const spotifyPlugin = guardPluginSearch(new SpotifyPlugin(), 20);
+		const youtubePlugin = guardPluginSearch(new YouTubePlugin(), 10);
+		const soundcloudPlugin = guardPluginSearch(new SoundCloudPlugin(), 5);
+
 		this.manager = new PlayerManager({
 			plugins: [
-				new YouTubePlugin(),
-				new SoundCloudPlugin(),
-				new SpotifyPlugin(),
-				new TTSPlugin({ defaultLang: config.ttsLang }),
-				new AttachmentsPlugin({ maxFileSize: 25 * 1024 * 1024 }),
+				this.ttsPlugin,
+				attachmentsPlugin,
+				spotifyPlugin,
+				youtubePlugin,
+				soundcloudPlugin,
 			],
 			extensions: globalExtensions,
 			extractorTimeout: config.extractorTimeoutMs,

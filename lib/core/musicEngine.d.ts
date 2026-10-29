@@ -1,5 +1,6 @@
 import { type Client, type Message, type VoiceBasedChannel } from "discord.js";
 import { PlayerManager, type Player } from "ziplayer";
+import { TTSPlugin } from "@ziplayer/plugin";
 import type { BotConfig } from "../types/bot.js";
 import { SessionPersistence } from "./persistence.js";
 export declare class ZiMusicBotEngine {
@@ -7,6 +8,7 @@ export declare class ZiMusicBotEngine {
     readonly config: BotConfig;
     readonly manager: PlayerManager;
     readonly persistence: SessionPersistence;
+    readonly ttsPlugin: TTSPlugin;
     private readonly refreshTimers;
     private readonly emptyChannelTimers;
     constructor(client: Client, config: BotConfig);

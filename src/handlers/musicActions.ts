@@ -258,10 +258,19 @@ export class MusicCommandActions {
 		});
 		await this.engine.ensureConnected(player, access.voiceChannel);
 
-		const ok = await player.play(`tts: ${cleaned}`, ctx.userId);
+		const ttsResult = await this.engine.ttsPlugin.search(`tts:${cleaned}`, ctx.userId);
+		const ttsTrack = ttsResult?.tracks?.[0];
+		if (!ttsTrack) {
+			await ctx.reply({
+				embeds: [infoEmbed("❌ Không thể tạo luồng giọng đọc TTS lúc này.", COLORS.ERROR)],
+			});
+			return;
+		}
+
+		const ok = await player.play(ttsTrack, ctx.userId);
 		if (!ok) {
 			await ctx.reply({
-				embeds: [infoEmbed("❌ Không thể khởi tạo giọng đọc TTS lúc này.", COLORS.ERROR)],
+				embeds: [infoEmbed("❌ Không thể phát giọng đọc TTS trên kênh thoại.", COLORS.ERROR)],
 			});
 			return;
 		}
