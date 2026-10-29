@@ -1,8 +1,11 @@
+import path from "node:path";
 import { ActivityType, Client, Events, GatewayIntentBits, Options } from "discord.js";
 import { assertBotCredentials, ensureFfmpegInstalled, loadConfig } from "./config.js";
 import { ZiMusicBotEngine } from "./core/musicEngine.js";
+import { AutoReplyStore } from "./core/autoReplyStore.js";
 import { deploySlashCommands } from "./deploy-commands.js";
 import { registerInteractionHandler } from "./handlers/interactionHandler.js";
+import { AutoReplyActions, registerAutoReplyHandler } from "./handlers/autoReplyHandler.js";
 import { MusicCommandActions } from "./handlers/musicActions.js";
 import { registerPrefixHandler } from "./handlers/prefixHandler.js";
 
@@ -55,9 +58,15 @@ export function createBotInstance(customEnv?: NodeJS.ProcessEnv, options: Create
 
 	const engine = new ZiMusicBotEngine(client, config);
 	const actions = new MusicCommandActions(engine);
+	const replyPath = path.resolve(path.dirname(config.persistenceFile), "auto-replies.json");
+	const autoReplyStore = new AutoReplyStore(
+		replyPath === path.resolve(config.persistenceFile) ? `${replyPath}.rules.json` : replyPath,
+	);
+	const autoReplyActions = new AutoReplyActions(autoReplyStore, includeMessageContent);
 
-	registerInteractionHandler(engine, actions);
+	registerInteractionHandler(engine, actions, autoReplyActions);
 	registerPrefixHandler(engine, actions);
+	registerAutoReplyHandler(client, autoReplyStore, includeMessageContent);
 
 	client.once(Events.ClientReady, async (readyClient) => {
 		const guildCount = readyClient.guilds.cache.size;
@@ -80,6 +89,13 @@ export function createBotInstance(customEnv?: NodeJS.ProcessEnv, options: Create
 				.map((p) => p.name)
 				.join(", ")} | FFmpeg: ${config.ffmpegPath ? "Sẵn sàng" : "Chưa tìm thấy"}`,
 		);
+
+		void autoReplyStore.ready().catch((err: unknown) => {
+			console.error("[AutoReply] Không thể tải cấu hình:", err instanceof Error ? err.message : err);
+		});
+		if (!includeMessageContent) {
+			console.warn("[AutoReply] Đang tắt: hãy bật Message Content Intent trong Discord Developer Portal rồi khởi động lại.");
+		}
 
 		readyClient.user.setPresence({
 			activities: [
@@ -116,7 +132,7 @@ export function createBotInstance(customEnv?: NodeJS.ProcessEnv, options: Create
 		}
 	});
 
-	return { client, config, engine, actions };
+	return { client, config, engine, actions, autoReplyStore, autoReplyActions };
 }
 
 function isDisallowedIntentsError(err: unknown): boolean {
@@ -137,6 +153,9 @@ async function main() {
 		shuttingDown = true;
 		console.log(`\n🛑 Nhận tín hiệu ${signal}, đang lưu phiên phát nhạc và đóng kết nối...`);
 		try {
+			await active.autoReplyStore.flush().catch((err: unknown) => {
+				console.error("[AutoReply] Không thể hoàn tất lưu cấu hình:", err instanceof Error ? err.message : err);
+			});
 			await active.engine.shutdown();
 			await active.client.destroy();
 		} catch (err) {

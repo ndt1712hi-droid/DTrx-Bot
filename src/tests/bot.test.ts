@@ -147,15 +147,16 @@ test("Vietnamese and English voice command parser enforces wake words", () => {
 	assert.deepEqual(parseVoiceCommand("bot lặp bài", ["zi", "bot"]), { type: "loop", mode: "track" });
 });
 
-test("Slash command definitions build all 27 commands cleanly", () => {
+test("Slash command definitions build all 28 commands cleanly", () => {
 	const commands = buildSlashCommands();
-	assert.equal(commands.length, 27);
+	assert.equal(commands.length, 28);
 	const names = new Set(commands.map((c) => c.name));
 	for (const expected of [
 		"play",
 		"playnext",
 		"tts",
 		"247",
+		"autoreply",
 		"pause",
 		"resume",
 		"skip",
@@ -184,6 +185,9 @@ test("Slash command definitions build all 27 commands cleanly", () => {
 	}
 	const stay = commands.find((command) => command.name === "247");
 	assert.deepEqual(stay?.options?.map((option) => option.name), ["on", "off", "status"]);
+	const autoReply = commands.find((command) => command.name === "autoreply");
+	assert.deepEqual(autoReply?.options?.map((option) => option.name), ["set", "remove", "list"]);
+	assert.equal(autoReply?.default_member_permissions, "32", "Only members with Manage Server can configure auto-replies by default");
 });
 
 test("ZiMusicBotEngine initializes all 5 plugins, isolates per-guild extensions, and builds rich embeds", async () => {
@@ -1333,5 +1337,44 @@ test("an unavailable Edge voice list does not reject during bot startup", async 
 		console.warn = savedWarn;
 		await engine.shutdown();
 		await client.destroy();
+	}
+});
+
+test("auto-reply is wired into the existing bot without overwriting the music session file", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-auto-reply-integrated-"));
+	const sessionFile = path.join(dir, "auto-replies.json");
+	await fs.writeFile(sessionFile, "[]", "utf8");
+	const { client, engine, autoReplyActions, autoReplyStore } = createBotInstance({
+		DISCORD_TOKEN: "dummy_token_for_unit_test",
+		ENABLE_PERSISTENCE: "false",
+		PERSISTENCE_FILE: sessionFile,
+	});
+	try {
+		const managementReplies: ReplyPayload[] = [];
+		const ctx: CommandContext = {
+			guild: { id: "guild-1", ownerId: "owner-1" } as any,
+			member: { permissions: { has: () => false } } as any,
+			userId: "owner-1",
+			textChannelId: "text-1",
+			defer: async () => undefined,
+			reply: async (payload) => { managementReplies.push(payload); },
+		};
+		await autoReplyActions.manage(ctx, "set", "xin chào", "Chào bạn!");
+		assert.equal(await autoReplyStore.find("guild-1", "XIN CHÀO"), "Chào bạn!");
+		const sent: any[] = [];
+		const listener = client.listeners("messageCreate").at(-1) as (message: unknown) => Promise<void>;
+		await listener({
+			guildId: "guild-1", author: { id: "human-1", bot: false }, webhookId: null,
+			content: "Xin Chào", reply: async (payload: unknown) => { sent.push(payload); },
+		});
+		assert.equal(sent[0]?.content, "Chào bạn!");
+		assert.equal(await fs.readFile(sessionFile, "utf8"), "[]", "The playback file must not be overwritten");
+		assert.equal(JSON.parse(await fs.readFile(`${sessionFile}.rules.json`, "utf8"))[0].trigger, "xin chào");
+		assert.ok(managementReplies[0]?.content?.includes("Đã lưu"));
+	} finally {
+		await autoReplyStore.flush();
+		await engine.shutdown();
+		await client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
 	}
 });

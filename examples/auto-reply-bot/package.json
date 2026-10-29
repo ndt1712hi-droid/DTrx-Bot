@@ -1,0 +1,19 @@
+{
+  "name": "discord-auto-reply-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Discord bot trả lời tự động theo câu do người tạo cấu hình.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test test.js"
+  },
+  "engines": {
+    "node": ">=20.20.0"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "dotenv": "^16.4.7"
+  }
+}

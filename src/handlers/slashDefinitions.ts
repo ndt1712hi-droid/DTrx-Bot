@@ -1,6 +1,7 @@
 import {
 	ApplicationIntegrationType,
 	InteractionContextType,
+	PermissionFlagsBits,
 	SlashCommandBuilder,
 	type RESTPostAPIChatInputApplicationCommandsJSONBody,
 } from "discord.js";
@@ -41,6 +42,17 @@ export function buildSlashCommands(): RESTPostAPIChatInputApplicationCommandsJSO
 			.addSubcommand((cmd) => cmd.setName("on").setDescription("Bật 24/7 trong kênh thoại bạn đang ở"))
 			.addSubcommand((cmd) => cmd.setName("off").setDescription("Tắt chế độ treo 24/7"))
 			.addSubcommand((cmd) => cmd.setName("status").setDescription("Xem trạng thái phòng thoại 24/7")),
+
+		new SlashCommandBuilder()
+			.setName("autoreply")
+			.setDescription("Cấu hình bot tự trả lời khi nhận đúng một câu")
+			.setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+			.addSubcommand((cmd) => cmd.setName("set").setDescription("Thêm hoặc sửa câu trả lời tự động")
+				.addStringOption((opt) => opt.setName("trigger").setDescription("Câu người dùng gửi").setRequired(true).setMaxLength(100))
+				.addStringOption((opt) => opt.setName("reply").setDescription("Câu bot sẽ trả lời").setRequired(true).setMaxLength(2000)))
+			.addSubcommand((cmd) => cmd.setName("remove").setDescription("Xóa một câu trả lời tự động")
+				.addStringOption((opt) => opt.setName("trigger").setDescription("Câu kích hoạt cần xóa").setRequired(true).setMaxLength(100)))
+			.addSubcommand((cmd) => cmd.setName("list").setDescription("Xem các câu trả lời tự động")),
 
 		new SlashCommandBuilder().setName("pause").setDescription("Tạm dừng bài hát đang phát"),
 

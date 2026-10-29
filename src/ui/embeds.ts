@@ -415,6 +415,7 @@ export function buildHelpEmbed(prefix: string) {
 					`\`/playnext <tên/link>\` hoặc \`${prefix}playnext\` — Chèn bài hát phát ngay kế tiếp`,
 					`\`/tts <văn bản>\` hoặc \`${prefix}tts <văn bản>\` — Đọc giọng nói Tiếng Việt/Anh trên kênh thoại (chế độ ngắt thông minh)`,
 					`\`/247 on\` — Treo bot trong phòng thoại; \`/247 off\` — tắt; \`/247 status\` — xem trạng thái`,
+					`\`/autoreply set\`, \`/autoreply remove\`, \`/autoreply list\` — Quản trị viên cấu hình trả lời tự động`,
 				].join("\n"),
 			},
 			{

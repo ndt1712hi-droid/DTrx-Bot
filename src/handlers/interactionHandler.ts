@@ -12,6 +12,7 @@ import {
 import { PREDEFINED_FILTERS } from "ziplayer";
 import type { ZiMusicBotEngine } from "../core/musicEngine.js";
 import type { PlayerUserData } from "../types/bot.js";
+import type { AutoReplyActions } from "./autoReplyHandler.js";
 import {
 	buildFullLyricsEmbed,
 	buildNowPlayingPayload,
@@ -333,7 +334,7 @@ async function handleControllerComponent(
 	}
 }
 
-export function registerInteractionHandler(engine: ZiMusicBotEngine, actions: MusicCommandActions): void {
+export function registerInteractionHandler(engine: ZiMusicBotEngine, actions: MusicCommandActions, autoReplyActions: AutoReplyActions): void {
 	engine.client.on("interactionCreate", async (interaction: Interaction) => {
 		try {
 			if (interaction.isAutocomplete()) {
@@ -385,6 +386,16 @@ export function registerInteractionHandler(engine: ZiMusicBotEngine, actions: Mu
 				case "247":
 					await actions.alwaysOnVoice(ctx, interaction.options.getSubcommand());
 					break;
+				case "autoreply": {
+					const mode = interaction.options.getSubcommand();
+					await autoReplyActions.manage(
+						ctx,
+						mode,
+						mode === "list" ? undefined : interaction.options.getString("trigger", true),
+						mode === "set" ? interaction.options.getString("reply", true) : undefined,
+					);
+					break;
+				}
 				case "pause":
 					await actions.pause(ctx);
 					break;

@@ -1,5 +1,6 @@
 import { GuildMember, type ButtonInteraction, type ChatInputCommandInteraction, type Guild, type StringSelectMenuInteraction } from "discord.js";
 import type { ZiMusicBotEngine } from "../core/musicEngine.js";
+import type { AutoReplyActions } from "./autoReplyHandler.js";
 import { MusicCommandActions } from "./musicActions.js";
 export type ResolvedGuildContext = {
     ok: true;
@@ -21,4 +22,4 @@ export type ResolvedGuildContext = {
  *    is `null` because the Bot user is not in the server.
  */
 export declare function resolveInteractionGuildAndMember(interaction: ChatInputCommandInteraction | ButtonInteraction | StringSelectMenuInteraction): Promise<ResolvedGuildContext>;
-export declare function registerInteractionHandler(engine: ZiMusicBotEngine, actions: MusicCommandActions): void;
+export declare function registerInteractionHandler(engine: ZiMusicBotEngine, actions: MusicCommandActions, autoReplyActions: AutoReplyActions): void;
