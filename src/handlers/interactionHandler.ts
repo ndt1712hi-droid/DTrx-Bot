@@ -5,6 +5,7 @@ import {
 	type AutocompleteInteraction,
 	type ButtonInteraction,
 	type ChatInputCommandInteraction,
+	type Guild,
 	type Interaction,
 	type StringSelectMenuInteraction,
 } from "discord.js";
@@ -25,15 +26,81 @@ import {
 	type ReplyPayload,
 } from "./musicActions.js";
 
-function createSlashContext(interaction: ChatInputCommandInteraction): CommandContext | null {
-	if (!interaction.guild || !(interaction.member instanceof GuildMember)) {
-		return null;
+// ViewChannel | SendMessages | EmbedLinks | AttachFiles | Connect | Speak | UseVAD
+const BOT_INVITE_PERMISSIONS = "36752384";
+
+export type ResolvedGuildContext =
+	| { ok: true; guild: Guild; member: GuildMember }
+	| { ok: false; kind: "not_in_guild" | "bot_not_in_guild" | "member_fetch_failed"; message: string };
+
+/**
+ * Safely resolves `Guild` and `GuildMember` for Slash & Component interactions.
+ *
+ * Fixes two common Discord.js v14 pitfalls:
+ * 1. `interaction.member` can be a raw `APIInteractionGuildMember` plain object (not `instanceof GuildMember`)
+ *    when `GuildMemberManager` uses `Options.cacheWithLimits` or before member cache warms up.
+ * 2. When a user installs the app via "User Install" or invites it with `applications.commands` only
+ *    (missing `bot` scope), `interaction.inGuild()` is `true` (`guildId` exists), yet `interaction.guild`
+ *    is `null` because the Bot user is not in the server.
+ */
+export async function resolveInteractionGuildAndMember(
+	interaction: ChatInputCommandInteraction | ButtonInteraction | StringSelectMenuInteraction,
+): Promise<ResolvedGuildContext> {
+	if (!interaction.inGuild() || !interaction.guildId) {
+		return {
+			ok: false,
+			kind: "not_in_guild",
+			message: "❌ Lệnh này không thể dùng trong Tin nhắn riêng (DM). Hãy gõ lệnh trong kênh chat của Server!",
+		};
+	}
+
+	const guild =
+		interaction.guild ??
+		interaction.client.guilds.cache.get(interaction.guildId) ??
+		(await interaction.client.guilds.fetch(interaction.guildId).catch(() => null));
+
+	if (!guild) {
+		const inviteUrl = `https://discord.com/oauth2/authorize?client_id=${interaction.applicationId}&permissions=${BOT_INVITE_PERMISSIONS}&integration_type=0&scope=bot+applications.commands`;
+		return {
+			ok: false,
+			kind: "bot_not_in_guild",
+			message: [
+				"❌ **Bot chưa có mặt trong Server này với tư cách thành viên (`bot` scope)!**",
+				"Hiện tại ứng dụng chỉ mới được cài dưới dạng *User App* hoặc chỉ có quyền *Slash Commands*, nên Discord không cho phép Bot nhìn thấy Server hay vào kênh thoại.",
+				`👉 **Cách sửa ngay:** [Bấm vào đây để mời đầy đủ Bot vào Server](${inviteUrl}) *(chọn Server của bạn → Authorize)* rồi gõ lại lệnh nhé!`,
+			].join("\n"),
+		};
+	}
+
+	const member =
+		interaction.member instanceof GuildMember
+			? interaction.member
+			: (guild.members.cache.get(interaction.user.id) ??
+				(await guild.members.fetch(interaction.user.id).catch(() => null)));
+
+	if (!member) {
+		return {
+			ok: false,
+			kind: "member_fetch_failed",
+			message: "❌ Không thể lấy thông tin thành viên của bạn trong Server này. Vui lòng thử lại sau giây lát!",
+		};
+	}
+
+	return { ok: true, guild, member };
+}
+
+async function createSlashContext(
+	interaction: ChatInputCommandInteraction,
+): Promise<{ ok: true; ctx: CommandContext } | { ok: false; message: string }> {
+	const resolved = await resolveInteractionGuildAndMember(interaction);
+	if (!resolved.ok) {
+		return { ok: false, message: resolved.message };
 	}
 
 	let deferred = false;
-	return {
-		guild: interaction.guild,
-		member: interaction.member,
+	const ctx: CommandContext = {
+		guild: resolved.guild,
+		member: resolved.member,
 		userId: interaction.user.id,
 		textChannelId: interaction.channelId,
 		defer: async (ephemeral = false) => {
@@ -62,6 +129,8 @@ function createSlashContext(interaction: ChatInputCommandInteraction): CommandCo
 			}
 		},
 	};
+
+	return { ok: true, ctx };
 }
 
 async function handleAutocomplete(engine: ZiMusicBotEngine, interaction: AutocompleteInteraction): Promise<void> {
@@ -131,9 +200,16 @@ async function handleControllerComponent(
 	engine: ZiMusicBotEngine,
 	interaction: ButtonInteraction | StringSelectMenuInteraction,
 ): Promise<void> {
-	if (!interaction.guild || !(interaction.member instanceof GuildMember)) return;
+	const resolved = await resolveInteractionGuildAndMember(interaction);
+	if (!resolved.ok) {
+		await interaction.reply({
+			content: resolved.message,
+			flags: MessageFlags.Ephemeral,
+		});
+		return;
+	}
 
-	const player = engine.manager.get(interaction.guild.id);
+	const player = engine.manager.get(resolved.guild.id);
 	if (!player || player.destroyed || !player.currentTrack) {
 		await interaction.reply({
 			embeds: [new EmbedBuilder().setColor(COLORS.ERROR).setDescription("❌ Phiên phát nhạc này đã kết thúc!")],
@@ -142,7 +218,7 @@ async function handleControllerComponent(
 		return;
 	}
 
-	const access = validateMemberVoiceAccess(interaction.member, player);
+	const access = validateMemberVoiceAccess(resolved.member, player);
 	if (!access.ok) {
 		await interaction.reply({
 			embeds: [new EmbedBuilder().setColor(COLORS.ERROR).setDescription(access.reason)],
@@ -228,7 +304,6 @@ async function handleControllerComponent(
 			ud.textChannelId = interaction.channelId;
 			await interaction.update(buildNowPlayingPayload(player, false)).catch(() => undefined);
 
-			// If user turned on Lyrics and we have unsynced plain lyrics (no karaoke timestamps), send full lyrics ephemerally too
 			if (ud.liveLyricsEnabled && player.currentTrack) {
 				const cached = ud.cachedLyrics;
 				if (cached && !cached.synced && cached.text) {
@@ -263,14 +338,15 @@ export function registerInteractionHandler(engine: ZiMusicBotEngine, actions: Mu
 
 			if (!interaction.isChatInputCommand()) return;
 
-			const ctx = createSlashContext(interaction);
-			if (!ctx) {
+			const resolvedCtx = await createSlashContext(interaction);
+			if (!resolvedCtx.ok) {
 				await interaction.reply({
-					content: "❌ Lệnh này chỉ có thể sử dụng bên trong máy chủ Discord (Server)!",
+					content: resolvedCtx.message,
 					flags: MessageFlags.Ephemeral,
 				});
 				return;
 			}
+			const { ctx } = resolvedCtx;
 
 			switch (interaction.commandName) {
 				case "play":

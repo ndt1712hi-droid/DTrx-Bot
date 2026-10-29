@@ -39,8 +39,9 @@ export function createBotInstance(customEnv?: NodeJS.ProcessEnv, options: Create
 			ThreadManager: 0,
 			AutoModerationRuleManager: 0,
 			GuildMemberManager: {
-				maxSize: 50,
-				keepOverLimit: (member) => member.id === member.client.user.id,
+				maxSize: 200,
+				keepOverLimit: (member) =>
+					member.id === member.client.user.id || Boolean(member.voice?.channelId),
 			},
 		}),
 		sweepers: {

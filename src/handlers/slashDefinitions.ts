@@ -1,4 +1,9 @@
-import { SlashCommandBuilder, type RESTPostAPIChatInputApplicationCommandsJSONBody } from "discord.js";
+import {
+	ApplicationIntegrationType,
+	InteractionContextType,
+	SlashCommandBuilder,
+	type RESTPostAPIChatInputApplicationCommandsJSONBody,
+} from "discord.js";
 
 export function buildSlashCommands(): RESTPostAPIChatInputApplicationCommandsJSONBody[] {
 	const commands = [
@@ -173,5 +178,10 @@ export function buildSlashCommands(): RESTPostAPIChatInputApplicationCommandsJSO
 		new SlashCommandBuilder().setName("help").setDescription("Xem danh sách đầy đủ các lệnh và tính năng của Bot"),
 	];
 
-	return commands.map((c) => c.toJSON());
+	return commands.map((c) =>
+		c
+			.setIntegrationTypes(ApplicationIntegrationType.GuildInstall)
+			.setContexts(InteractionContextType.Guild)
+			.toJSON(),
+	);
 }
