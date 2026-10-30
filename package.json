@@ -1,6 +1,6 @@
 {
   "name": "ziplayer-discord-bot",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "type": "module",
   "description": "Lightweight, full-featured Discord Music Bot powered by ZiPlayer — optimized for Botkeep Free Tier & VPS",
   "main": "lib/index.js",

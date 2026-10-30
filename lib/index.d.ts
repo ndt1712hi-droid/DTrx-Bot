@@ -3,6 +3,8 @@ import { ZiMusicBotEngine } from "./core/musicEngine.js";
 import { AutoReplyStore } from "./core/autoReplyStore.js";
 import { MemberGreetingStore } from "./core/memberGreetingStore.js";
 import { MemberBannerStore } from "./core/memberBannerStore.js";
+import { ChannelLockStore } from "./core/channelLockStore.js";
+import { ChannelLockActions } from "./handlers/channelLockHandler.js";
 import { AutoReplyActions } from "./handlers/autoReplyHandler.js";
 import { MusicCommandActions } from "./handlers/musicActions.js";
 import { MemberGreetingActions, MemberGreetingService } from "./handlers/memberGreetingHandler.js";
@@ -21,6 +23,8 @@ export declare function createBotInstance(customEnv?: NodeJS.ProcessEnv, options
     bannerStore: MemberBannerStore;
     greetingService: MemberGreetingService;
     greetingActions: MemberGreetingActions;
+    channelLockStore: ChannelLockStore;
+    channelLockActions: ChannelLockActions;
 };
 /** Clean up an instance that failed before login without erasing saved music. */
 export declare function disposeFailedLogin(bot: ReturnType<typeof createBotInstance>): Promise<void>;

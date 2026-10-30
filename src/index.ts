@@ -7,6 +7,8 @@ import { ZiMusicBotEngine } from "./core/musicEngine.js";
 import { AutoReplyStore } from "./core/autoReplyStore.js";
 import { MemberGreetingStore } from "./core/memberGreetingStore.js";
 import { MemberBannerStore } from "./core/memberBannerStore.js";
+import { ChannelLockStore } from "./core/channelLockStore.js";
+import { ChannelLockActions } from "./handlers/channelLockHandler.js";
 import { deploySlashCommands } from "./deploy-commands.js";
 import { registerInteractionHandler } from "./handlers/interactionHandler.js";
 import { AutoReplyActions, registerAutoReplyHandler } from "./handlers/autoReplyHandler.js";
@@ -83,8 +85,13 @@ export function createBotInstance(customEnv?: NodeJS.ProcessEnv, options: Create
 	);
 	const greetingService = new MemberGreetingService(client, greetingStore, includeGuildMembers, undefined, bannerStore);
 	const greetingActions = new MemberGreetingActions(greetingStore, greetingService, includeGuildMembers);
+	const lockPath = path.resolve(path.dirname(config.persistenceFile), "channel-locks.json");
+	const channelLockStore = new ChannelLockStore(
+		lockPath === path.resolve(config.persistenceFile) ? `${lockPath}.locks.json` : lockPath,
+	);
+	const channelLockActions = new ChannelLockActions(channelLockStore);
 
-	registerInteractionHandler(engine, actions, autoReplyActions, greetingActions);
+	registerInteractionHandler(engine, actions, autoReplyActions, greetingActions, channelLockActions);
 	registerPrefixHandler(engine, actions);
 	registerAutoReplyHandler(client, autoReplyStore, includeMessageContent);
 	greetingService.register();
@@ -119,6 +126,9 @@ export function createBotInstance(customEnv?: NodeJS.ProcessEnv, options: Create
 		}
 		void greetingStore.ready().catch((err: unknown) => {
 			console.error("[Greeting] Không thể tải cấu hình:", err instanceof Error ? err.message : err);
+		});
+		void channelLockStore.ready().catch((err: unknown) => {
+			console.error("[ChannelLock] Không thể tải bản khôi phục quyền:", err instanceof Error ? err.message : err);
 		});
 		if (!includeGuildMembers) {
 			console.warn("[Greeting] Welcome/goodbye chưa nhận sự kiện: bật Server Members Intent trong Discord Developer Portal rồi khởi động lại.");
@@ -161,12 +171,13 @@ export function createBotInstance(customEnv?: NodeJS.ProcessEnv, options: Create
 		}
 	});
 
-	return { client, config, engine, actions, autoReplyStore, autoReplyActions, greetingStore, bannerStore, greetingService, greetingActions };
+	return { client, config, engine, actions, autoReplyStore, autoReplyActions, greetingStore, bannerStore, greetingService, greetingActions, channelLockStore, channelLockActions };
 }
 
 /** Clean up an instance that failed before login without erasing saved music. */
 export async function disposeFailedLogin(bot: ReturnType<typeof createBotInstance>): Promise<void> {
 	bot.greetingService.close();
+	await bot.channelLockActions.close().catch(() => undefined);
 	await bot.engine.shutdown({ saveSessions: false }).catch(() => undefined);
 	await bot.client.destroy().catch(() => undefined);
 }
@@ -238,6 +249,9 @@ async function main() {
 			const bot = active;
 			if (bot) {
 				bot.greetingService.close();
+				await bot.channelLockActions.close().catch((err: unknown) => {
+					console.error("[ChannelLock] Không thể hoàn tất lưu dữ liệu:", err instanceof Error ? err.message : err);
+				});
 				await bot.autoReplyStore.flush().catch((err: unknown) => {
 					console.error("[AutoReply] Không thể hoàn tất lưu cấu hình:", err instanceof Error ? err.message : err);
 				});

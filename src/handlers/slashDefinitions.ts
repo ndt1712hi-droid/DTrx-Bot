@@ -23,6 +23,15 @@ function greetingCommand(name: "welcome" | "goodbye") {
 		.addSubcommand((cmd) => cmd.setName("reset-banner").setDescription("Trở về ảnh nền mặc định"));
 }
 
+function channelLockCommand(name: "lock" | "unlock") {
+	return new SlashCommandBuilder()
+		.setName(name)
+		.setDescription(name === "lock" ? "Khóa nhắn tin và chủ đề cho @everyone" : "Khôi phục quyền kênh trước khi bot khóa")
+		.setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles)
+		.addChannelOption((opt) => opt.setName("channel").setDescription("Kênh chữ (bỏ trống để dùng kênh hiện tại)")
+			.addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(false));
+}
+
 export function buildSlashCommands(): RESTPostAPIChatInputApplicationCommandsJSONBody[] {
 	const commands = [
 		new SlashCommandBuilder()
@@ -73,6 +82,8 @@ export function buildSlashCommands(): RESTPostAPIChatInputApplicationCommandsJSO
 
 		greetingCommand("welcome"),
 		greetingCommand("goodbye"),
+		channelLockCommand("lock"),
+		channelLockCommand("unlock"),
 
 		new SlashCommandBuilder().setName("pause").setDescription("Tạm dừng bài hát đang phát"),
 

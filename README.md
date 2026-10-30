@@ -25,10 +25,11 @@ Bot nghe nhạc Discord đa năng, hiệu năng cao được xây dựng hoàn c
   - **AI Autoplay (`AiAutoplayExtension`)** — Gợi ý nhạc theo gu bằng Gemini khi cấu hình `GEMINI_API_KEY`.
   - **Lavalink (`lavalinkExt`)** — Hỗ trợ kết nối Lavalink Nodes ngoài khi cấu hình `LAVALINK_NODES`.
 - 🎮 **3 phương thức điều khiển song song**:
-  - **30 Slash Commands (`/play`, `/filter`...)** có **Autocomplete tìm kiếm bài hát & bộ lọc trực tiếp**.
+  - **32 Slash Commands (`/play`, `/filter`...)** có **Autocomplete tìm kiếm bài hát & bộ lọc trực tiếp**.
   - **Prefix Commands (`!play`, `!skip`, `!np`...)** nhanh gọn.
   - **Bảng điều khiển Nút bấm & Menu chọn Filter (Interactive Controller)** tự động cập nhật trạng thái và bảo vệ quyền điều khiển theo kênh thoại.
 - 👋 **Welcome / Goodbye:** Chọn kênh và nội dung riêng cho từng server; banner cá nhân hóa tên, avatar, tên server và số thành viên; tự tải nền riêng qua Discord.
+- 🔒 **Khóa kênh chữ:** `/lock` chặn nhắn tin và chủ đề của @everyone; `/unlock` khôi phục các quyền trước đó.
 - 💾 **Tự động lưu & khôi phục phiên phát (`SessionPersistence`)**: Lưu hàng đợi định kỳ và khi tắt bot, tự động vào lại phòng phát tiếp khi bot khởi động lại.
 - 📥 **Xuất file MP3 trực tiếp (`/save`)**: Chuyển đổi bài đang phát (kèm hiệu ứng FFmpeg tùy chọn) thành file `.mp3` gửi thẳng vào kênh chat.
 - 📡 **Multi-Server Forward Mirror (`/mirror`)**: Đồng bộ luồng phát âm thanh trực tiếp từ một Server chính sang các Server phụ với mức tốn CPU cực thấp.
@@ -54,7 +55,7 @@ Sao chép file `.env.example` thành `.env` và điền Token của bạn:
 cp .env.example .env
 ```
 
-Tối thiểu bạn chỉ cần điền `DISCORD_TOKEN` trong `.env` (Bot sẽ tự nhận diện `CLIENT_ID` và đăng ký toàn bộ 30 Slash Commands khi khởi động nếu `AUTO_DEPLOY_COMMANDS=true`):
+Tối thiểu bạn chỉ cần điền `DISCORD_TOKEN` trong `.env` (Bot sẽ tự nhận diện `CLIENT_ID` và đăng ký toàn bộ 32 Slash Commands khi khởi động nếu `AUTO_DEPLOY_COMMANDS=true`):
 
 ```env
 DISCORD_TOKEN=your_discord_bot_token_here
@@ -101,6 +102,7 @@ docker run -d --name ziplayer-bot --env-file .env -v "$(pwd)/data:/app/data" --r
 | `/welcome banner`, `/welcome reset-banner` | — | Tải ảnh nền welcome hoặc khôi phục nền mặc định |
 | `/goodbye set`, `/goodbye test`, `/goodbye status`, `/goodbye off` | — | Cài đặt và thử thông báo tạm biệt kèm banner |
 | `/goodbye banner`, `/goodbye reset-banner` | — | Tải ảnh nền goodbye hoặc khôi phục nền mặc định |
+| `/lock [channel]`, `/unlock [channel]` | — | Khóa kênh chữ cho @everyone hoặc khôi phục quyền trước khi khóa |
 | `/pause` / `/resume` | `!pause` / `!resume` | Tạm dừng / Tiếp tục phát nhạc |
 | `/skip [to]` | `!skip [vị trí]`, `!s` | Bỏ qua bài hiện tại hoặc nhảy thẳng tới bài thứ `N` |
 | `/previous` | `!prev`, `!back` | Quay lại phát bài trước đó trong lịch sử |
@@ -150,7 +152,18 @@ docker run -d --name ziplayer-bot --env-file .env -v "$(pwd)/data:/app/data" --r
 - Bot cần quyền **View Channel**, **Send Messages** và **Attach Files** trong kênh. Banner JPG dùng nền mặc định và font tiếng Việt trong `assets/`, hoặc nền do quản trị viên tải lên, cùng tên/avatar thực của thành viên, tên server và số thành viên; khi avatar không tải được sẽ dùng hình mặc định. Nếu không tạo/gửi được ảnh hoặc hàng đợi ảnh quá tải, bot cố gửi lời chào dạng chữ và ghi log `[Greeting]`. Bot tải thư viện ảnh khi cần và chỉ xử lý một banner mỗi lần.
 - Welcome/goodbye ban đầu **tắt** và được lưu riêng theo server trong `data/member-greetings.json`, cùng thư mục với `PERSISTENCE_FILE`. Nếu `PERSISTENCE_FILE` trùng tên này, bot dùng `member-greetings.json.settings.json` để tránh ghi đè. Ảnh nền tự tải được tối ưu và lưu riêng trong `data/member-banners/`; nếu đường dẫn đó trùng `PERSISTENCE_FILE`, dùng `member-banners.images/`. Giữ thư mục dữ liệu qua restart/redeploy. Nếu bot offline, các sự kiện xảy ra lúc đó không được phát lại; goodbye cũng áp dụng cho thành viên bị kick/ban.
 - Nếu chưa bật Server Members Intent, bot thử khởi động ở chế độ tương thích để nhạc tiếp tục hoạt động, nhưng không tự nhận sự kiện vào/rời; `status`/`set` sẽ nhắc bật intent. `/test` vẫn có thể gửi thử sau khi cấu hình. Nếu vẫn lỗi, kiểm tra log `[Gateway]`/`[Greeting]` và quyền kênh.
-- Nếu không thấy `/welcome` hoặc `/goodbye`, dùng tài khoản có quyền **Manage Server** trong server đã thêm bot. Xem Console sau khi khởi động: `[Runtime] DTrx-Bot 1.1.1` cho biết mã phiên bản mới đang chạy; dòng `Đã đăng ký 30 Slash Commands ... gồm /welcome và /goodbye` cho biết đăng ký thành công. Kiểm tra `AUTO_DEPLOY_COMMANDS=true`; nếu có `DISCORD_GUILD_ID`, lệnh chỉ đăng ký cho server có ID đó, còn lệnh global có thể cần thời gian cập nhật. Tìm lỗi `Không thể tự động đăng ký Slash Commands` nếu không thấy dòng thành công.
+- Nếu không thấy `/welcome` hoặc `/goodbye`, dùng tài khoản có quyền **Manage Server** trong server đã thêm bot. Xem Console sau khi khởi động: `[Runtime] DTrx-Bot 1.2.0` cho biết mã phiên bản mới đang chạy; dòng `Đã đăng ký 32 Slash Commands ... gồm /welcome, /goodbye, /lock và /unlock` cho biết đăng ký thành công. Kiểm tra `AUTO_DEPLOY_COMMANDS=true`; nếu có `DISCORD_GUILD_ID`, lệnh chỉ đăng ký cho server có ID đó, còn lệnh global có thể cần thời gian cập nhật. Tìm lỗi `Không thể tự động đăng ký Slash Commands` nếu không thấy dòng thành công.
+
+### Khóa và mở khóa kênh chữ
+
+1. Người dùng lệnh và bot cần có **Xem kênh** và **Quản lý quyền hạn (Manage Roles)** trong kênh đích. Quyền Manage Roles không nằm trong link mời nhạc mặc định; nhờ chủ server cấp riêng cho bot trong kênh nếu cần. Discord có thể yêu cầu bot có thêm các quyền mà nó đang chỉnh; xem lỗi `[ChannelLock]` khi API từ chối.
+2. Trong kênh chữ, chạy `/lock` để khóa kênh hiện tại, hoặc chạy `/lock` và chọn `channel` khác. Kênh thông báo cũng được hỗ trợ; chủ đề, diễn đàn và kênh thoại không được hỗ trợ.
+3. Bot chỉ đặt **từ chối** bốn quyền của `@everyone`: **Send Messages**, **Send Messages in Threads**, **Create Public Threads**, **Create Private Threads**. Không thay đổi quyền xem, đọc lịch sử hay các vai trò/thành viên khác. Trước khi khóa, bot phải đã có quyền xem và gửi; bot tạm bảo vệ quyền gửi của chính mình để welcome vẫn có thể hoạt động. Nếu thiếu **Attach Files**, banner có thể chỉ gửi chữ; hãy dùng `/welcome test` sau khi cấu hình.
+4. Dùng `/unlock` ở kênh đó hoặc chọn lại `channel` để khôi phục đúng các giá trị quyền trước khi bot khóa (cho phép / từ chối / kế thừa), kể cả sau khi bot khởi động lại. Nếu trước đó một quyền đã bị từ chối thì `/unlock` giữ trạng thái bị từ chối; lệnh không tự cho phép tất cả. Nếu một quyền hiện khác với cả giá trị ban đầu và giá trị bot đặt khi khóa, bot giữ nguyên giá trị đó và cảnh báo thay vì ghi đè.
+
+**Giới hạn Discord:** Khóa `@everyone` không bảo đảm mọi người đều bị chặn: quản trị viên và các vai trò/thành viên có quyền cho phép riêng trong kênh có thể vượt qua ghi đè `@everyone`. Bot chỉ khóa khi được gọi lệnh; không tự khóa kênh welcome. Việc thay đổi quyền có thể làm kênh tạm mất đồng bộ quyền với danh mục; sau mở, bot khôi phục các ghi đè do nó sửa nhưng không ép đồng bộ lại nếu người quản lý đã thay đổi quyền khác.
+
+Bản quyền cũ được ghi **trước** khi bot sửa Discord vào `data/channel-locks.json` cạnh `PERSISTENCE_FILE`; nếu trùng tên file phiên nhạc thì dùng `channel-locks.json.locks.json`. Giữ thư mục `data/` khi cập nhật. Nếu khóa hoặc mở thất bại giữa chừng, bản lưu vẫn giữ; sửa quyền/kết nối rồi thử `/unlock` lại. Nếu mất hoặc hỏng bản lưu, `/unlock` từ chối thay đổi để tránh mở nhầm; khôi phục file từ bản sao lưu hoặc nhờ quản trị viên sửa thủ công. Không chạy nhiều bản bot cùng token/dữ liệu song song.
 
 ### Treo bot trong phòng thoại 24/7
 
@@ -170,7 +183,7 @@ Cấu hình phòng được lưu tại `data/voice-24-7.json` (cùng thư mục 
 ├── src/
 │   ├── index.ts                     # Điểm khởi chạy chính & quản lý vòng đời tiến trình
 │   ├── config.ts                    # Đọc cấu hình .env & tự động ánh xạ FFmpeg binary
-│   ├── deploy-commands.ts           # Đăng ký 30 Slash Commands lên Discord API
+│   ├── deploy-commands.ts           # Đăng ký 32 Slash Commands lên Discord API
 │   ├── core/
 │   │   ├── musicEngine.ts           # Quản lý ZiPlayer, Plugins, Extensions & Discord Events
 │   │   ├── persistence.ts           # Tự động lưu & khôi phục phiên nhạc qua JSON nguyên tử
@@ -179,12 +192,14 @@ Cấu hình phòng được lưu tại `data/voice-24-7.json` (cùng thư mục 
 │   │   ├── memberGreetingStore.ts   # Lưu cấu hình welcome/goodbye theo server
 │   │   ├── memberBanner.ts          # Tạo banner JPG và xử lý ảnh tải lên có giới hạn
 │   │   ├── memberBannerStore.ts     # Lưu ảnh nền riêng của từng server
+│   │   ├── channelLockStore.ts      # Lưu bản quyền cũ để mở khóa an toàn
 │   │   └── exporter.ts              # Xuất luồng nhạc ZiPlayer sang MP3 qua FFmpeg
 │   ├── handlers/
-│   │   ├── slashDefinitions.ts      # Định nghĩa cấu trúc 30 Slash Commands
+│   │   ├── slashDefinitions.ts      # Định nghĩa cấu trúc 32 Slash Commands
 │   │   ├── musicActions.ts          # Xử lý nghiệp vụ thống nhất & kiểm tra quyền kênh thoại
 │   │   ├── autoReplyHandler.ts      # Trả lời tự động và quản lý bằng slash command
 │   │   ├── memberGreetingHandler.ts # Sự kiện vào/rời, hàng đợi banner & lệnh quản trị
+│   │   ├── channelLockHandler.ts    # Khóa/mở kênh chữ và phục hồi quyền
 │   │   ├── interactionHandler.ts    # Xử lý Slash, Autocomplete, Nút bấm & Select Menu
 │   │   └── prefixHandler.ts         # Xử lý lệnh Prefix văn bản (!play, !skip...)
 │   ├── ui/

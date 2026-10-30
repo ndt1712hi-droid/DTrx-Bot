@@ -14,6 +14,7 @@ import type { ZiMusicBotEngine } from "../core/musicEngine.js";
 import type { PlayerUserData } from "../types/bot.js";
 import type { AutoReplyActions } from "./autoReplyHandler.js";
 import type { MemberGreetingActions } from "./memberGreetingHandler.js";
+import type { ChannelLockActions } from "./channelLockHandler.js";
 import {
 	buildFullLyricsEmbed,
 	buildNowPlayingPayload,
@@ -351,6 +352,7 @@ export function registerInteractionHandler(
 	actions: MusicCommandActions,
 	autoReplyActions: AutoReplyActions,
 	greetingActions?: MemberGreetingActions,
+	channelLockActions?: ChannelLockActions,
 ): void {
 	const autocompleteValues = new AutocompleteValueStore();
 	engine.client.on("interactionCreate", async (interaction: Interaction) => {
@@ -374,7 +376,8 @@ export function registerInteractionHandler(
 			// than Discord's initial interaction deadline.
 			console.log(`[Slash] /${interaction.commandName} received (guild: ${interaction.guildId ?? "DM"})`);
 			if (!interaction.deferred && !interaction.replied) {
-				await interaction.deferReply();
+				const privateManagement = interaction.commandName === "lock" || interaction.commandName === "unlock";
+				await interaction.deferReply(privateManagement ? { flags: MessageFlags.Ephemeral } : undefined);
 			}
 
 			const resolvedCtx = await createSlashContext(interaction);
@@ -432,6 +435,16 @@ export function registerInteractionHandler(
 						mode === "set" ? interaction.options.getString("message") ?? undefined : undefined,
 						mode === "banner" ? interaction.options.getAttachment("image", true) : undefined,
 					);
+					break;
+				}
+				case "lock":
+				case "unlock": {
+					if (!channelLockActions) {
+						await ctx.reply({ content: "❌ Chức năng khóa kênh chưa sẵn sàng.", ephemeral: true });
+						break;
+					}
+					const selected = interaction.options.getChannel("channel");
+					await channelLockActions.manage(ctx, interaction.commandName, selected?.id);
 					break;
 				}
 				case "autoreply": {

@@ -17,8 +17,8 @@ test.after(restoreMediaInitialization);
 test("guild command registration omits fields supported only for global commands", () => {
 	const globalCommands = buildDeploymentCommands(false);
 	const guildCommands = buildDeploymentCommands(true);
-	assert.equal(globalCommands.length, 30);
-	assert.equal(guildCommands.length, 30);
+	assert.equal(globalCommands.length, 32);
+	assert.equal(guildCommands.length, 32);
 	assert.deepEqual(globalCommands.map((command) => command.name), guildCommands.map((command) => command.name));
 	assert.ok(globalCommands.every((command) => "contexts" in command && "integration_types" in command));
 	assert.ok(guildCommands.every((command) => !("contexts" in command) && !("integration_types" in command) && !("dm_permission" in command)));
@@ -33,11 +33,11 @@ test("command deployment uses the logged-in bot ID and selects the correct Disco
 	const calls: { route: string; body: any[] }[] = [];
 	const rest = { put: async (route: string, options: { body: any[] }) => { calls.push({ route, body: options.body }); return options.body; } } as unknown as Pick<REST, "put">;
 	const base = { discordToken: "test-only", clientId: "old-client" } as BotConfig;
-	assert.equal(await deploySlashCommands({ ...base, guildId: "guild-1" }, "actual-bot", rest), 30);
+	assert.equal(await deploySlashCommands({ ...base, guildId: "guild-1" }, "actual-bot", rest), 32);
 	assert.equal(calls[0].route, Routes.applicationGuildCommands("actual-bot", "guild-1"));
 	assert.ok(calls[0].body.some((entry) => entry.name === "welcome"));
 	assert.ok(calls[0].body.every((entry) => !("contexts" in entry) && !("integration_types" in entry)));
-	assert.equal(await deploySlashCommands({ ...base, guildId: undefined }, "actual-bot", rest), 30);
+	assert.equal(await deploySlashCommands({ ...base, guildId: undefined }, "actual-bot", rest), 32);
 	assert.equal(calls[1].route, Routes.applicationCommands("actual-bot"));
 	assert.ok(calls[1].body.every((entry) => "contexts" in entry && "integration_types" in entry));
 });
@@ -49,7 +49,7 @@ test("manual deployment requires an application ID and reports REST errors", asy
 	await assert.rejects(deploySlashCommands({ ...base, clientId: "valid-app-id" }, undefined, rest), /simulated Discord rejection/);
 });
 
-test("bot ready event registers welcome and goodbye with the running bot ID", { timeout: 10_000 }, async () => {
+test("bot ready event registers greetings and channel lock with the running bot ID", { timeout: 10_000 }, async () => {
 	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "dtrx-deploy-ready-"));
 	const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
 	await once(server, "listening");
@@ -86,9 +86,11 @@ test("bot ready event registers welcome and goodbye with the running bot ID", { 
 		await bot.client.login("fake-local-only-token");
 		const call = await Promise.race([called, new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("command registration timed out")), 2_000); })]);
 		assert.equal(call.route, Routes.applicationGuildCommands(actualId, "200000000000000002"));
-		assert.equal(call.body.length, 30);
+		assert.equal(call.body.length, 32);
 		assert.ok(call.body.some((command) => command.name === "welcome"));
 		assert.ok(call.body.some((command) => command.name === "goodbye"));
+		assert.ok(call.body.some((command) => command.name === "lock"));
+		assert.ok(call.body.some((command) => command.name === "unlock"));
 		assert.ok(call.body.every((command) => !("contexts" in command) && !("integration_types" in command)));
 	} finally {
 		if (timeout) clearTimeout(timeout);
