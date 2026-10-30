@@ -63,6 +63,8 @@ DISCORD_GUILD_ID=
 
 ### 3. Cài đặt & Khởi chạy
 
+Cần **Node.js 22.12 trở lên** (khuyến nghị Node 22 LTS hoặc mới hơn); thư viện Discord voice hiện không hỗ trợ Node 20. Trên Botkeep, chọn Node 22 rồi cập nhật/redeploy mã mới. Giữ thư mục `data/` khi redeploy để không mất cấu hình 24/7 và auto-reply.
+
 ```bash
 # Cài đặt thư viện
 npm install
@@ -113,6 +115,14 @@ docker run -d --name ziplayer-bot --env-file .env --restart unless-stopped zipla
 | `/save [filter]` | `!save [filter]` | Xuất bài đang phát thành file `.mp3` gửi vào kênh chat |
 | `/mirror <leader_id\|off>` | `!mirror <id\|off>` | Đồng bộ luồng nhạc thời gian thực từ Server chính |
 | `/stats` / `/help` | `!stats` / `!help` | Xem thông số ZiPlayer Engine & bảng hướng dẫn |
+
+### Phát nhạc và kiểm tra khi không có tiếng
+
+1. Vào cùng phòng thoại với bot. Nếu có hàng đợi cũ không mong muốn, dùng `/stop` (lệnh này xóa toàn bộ hàng đợi).
+2. Nhập `/play`, dán tên bài hoặc link vào ô `query`, sau đó gửi lệnh. Dùng link chỉ có `watch?v=...` nếu muốn phát một video thay vì cả danh sách Mix.
+3. Dùng `/volume level:80` nếu âm lượng bằng 0; dùng `/resume` nếu nhạc đang tạm dừng.
+4. Bot phải có quyền **View Channel**, **Connect** và **Speak** trong phòng, và không bị tắt tiếng bởi quản trị viên. Với Stage, bot cần được mời làm diễn giả.
+5. Nếu bot đã vào phòng nhưng vẫn im lặng, xem log Botkeep có dòng `[Runtime]`, `[Voice]`, `[Playback]` hoặc `[ZiPlayer]`. Tiếng chuông vào phòng và thông báo đã thêm vào hàng đợi không chứng minh người nghe đã nhận được âm thanh.
 
 ### Trả lời tin nhắn tự động
 

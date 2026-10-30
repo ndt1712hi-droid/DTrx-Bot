@@ -26,6 +26,8 @@ export declare function validateMemberVoiceAccess(member: GuildMember, existingP
     ok: false;
     reason: string;
 };
+/** Check audio-specific permissions even when 24/7 already joined the room. */
+export declare function getVoicePlaybackIssue(member: GuildMember, channel: VoiceBasedChannel): string | null;
 export declare class MusicCommandActions {
     private readonly engine;
     constructor(engine: ZiMusicBotEngine);

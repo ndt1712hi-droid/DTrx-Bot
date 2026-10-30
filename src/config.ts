@@ -24,10 +24,14 @@ export function resolveAndBindFfmpeg(): string | null {
 	].filter((v): v is string => Boolean(v && v.trim()));
 
 	for (const candidate of candidates) {
-		if (fs.existsSync(candidate)) {
+		try {
+			if (!fs.statSync(candidate).isFile()) continue;
+			fs.accessSync(candidate, fs.constants.X_OK);
 			process.env.FFMPEG_BIN = candidate;
 			process.env.FFMPEG_PATH = candidate;
 			return candidate;
+		} catch {
+			// Try the bundled binary or system FFmpeg if this candidate is unusable.
 		}
 	}
 

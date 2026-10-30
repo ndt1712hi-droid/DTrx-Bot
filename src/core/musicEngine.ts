@@ -1,5 +1,6 @@
 import path from "node:path";
-import { VoiceConnectionStatus } from "@discordjs/voice";
+import { once } from "node:events";
+import { AudioPlayerStatus, VoiceConnectionStatus } from "@discordjs/voice";
 import {
 	ChannelType,
 	EmbedBuilder,
@@ -28,6 +29,7 @@ import {
 import { formatDuration, parseVoiceCommand, truncate } from "../utils/format.js";
 import { SessionPersistence } from "./persistence.js";
 import { AlwaysOnVoiceStore, type AlwaysOnVoiceTarget } from "./alwaysOnStore.js";
+import { installManagedAudioResources } from "./managedAudioResource.js";
 
 /** The dependency starts init() without awaiting it. Catch failures here so a
  * temporary Edge voice-list outage cannot cause an unhandled rejection; the
@@ -88,6 +90,7 @@ export class ZiMusicBotEngine {
 	private readonly emptyChannelTimers = new Map<string, NodeJS.Timeout>();
 	private readonly alwaysOnStore: AlwaysOnVoiceStore;
 	private readonly guardedPlayers = new WeakSet<Player>();
+	private readonly monitoredConnections = new WeakSet<NonNullable<Player["connection"]>>();
 	private readonly voiceModeLocks = new Map<string, Promise<unknown>>();
 	private readonly reconnectPending = new Set<string>();
 	private readonly suppressedSessionRestores = new Set<string>();
@@ -314,6 +317,7 @@ export class ZiMusicBotEngine {
 			this.guardPlayerLifecycle(existing);
 			existing.runtimeGraph.lifecycleController.clearLeaveTimeout();
 			this.clearEmptyChannelTimer(target.guildId);
+			this.ensureAudioSubscription(existing);
 			return;
 		}
 
@@ -473,7 +477,37 @@ export class ZiMusicBotEngine {
 		});
 
 		this.guardPlayerLifecycle(player);
+		installManagedAudioResources(player, this.config.ffmpegPath);
 		return player;
+	}
+
+	/** A ready voice connection can still be detached from the music player. */
+	private ensureAudioSubscription(player: Player): void {
+		const connection = player.connection;
+		if (!connection || connection.state.status !== VoiceConnectionStatus.Ready) {
+			throw new Error("Kết nối voice chưa sẵn sàng để gửi âm thanh");
+		}
+		if (!this.monitoredConnections.has(connection)) {
+			this.monitoredConnections.add(connection);
+			connection.on("error", (error: Error) => {
+				console.error(`[Voice] Lỗi kết nối trong server ${player.guildId}:`, error.message);
+			});
+		}
+
+		// Mirroring uses the leader's AudioPlayer. TTS temporarily replaces the
+		// subscription while it speaks and restores music afterwards; neither
+		// should be interrupted by a /play or the 24/7 watchdog.
+		if (player.playbackMode !== "native") return;
+		const current = connection.state.subscription;
+		const ttsPlayer = player.runtimeGraph.ttsController.player;
+		if (current?.player === player.audioPlayer ||
+			(current?.player === ttsPlayer && ttsPlayer.state.status !== AudioPlayerStatus.Idle)) return;
+
+		const subscription = player.runtimeGraph.connectionController.ensureSubscription(connection);
+		if (!subscription || subscription.player !== player.audioPlayer) {
+			throw new Error("Không thể nối trình phát nhạc với kênh thoại; hãy kiểm tra log voice");
+		}
+		console.log(`[Voice] Đã khôi phục kết nối trình phát âm thanh trong server ${player.guildId}.`);
 	}
 
 	/**
@@ -504,6 +538,20 @@ export class ZiMusicBotEngine {
 			if (player.destroyed) throw new Error("Trình phát đã bị ngắt trong lúc kết nối voice");
 			joined = true;
 		}
+
+		const activeConnection = player.connection;
+		if (!activeConnection) throw new Error("Không thể tạo kết nối voice");
+		if (activeConnection.state.status !== VoiceConnectionStatus.Ready) {
+			try {
+				await once(activeConnection, VoiceConnectionStatus.Ready, { signal: AbortSignal.timeout(15_000) });
+			} catch {
+				throw new Error("Kết nối voice chưa sẵn sàng sau 15 giây; hãy kiểm tra mạng và quyền kênh");
+			}
+		}
+		if (player.destroyed || player.connection !== activeConnection) {
+			throw new Error("Kết nối voice đã thay đổi trong lúc chuẩn bị phát");
+		}
+		this.ensureAudioSubscription(player);
 
 		if (joined) {
 			ud.voiceChannelId = voiceChannel.id;

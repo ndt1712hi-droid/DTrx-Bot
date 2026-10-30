@@ -1,4 +1,4 @@
-import { VoiceConnectionStatus } from "@discordjs/voice";
+import { AudioPlayerStatus, VoiceConnectionStatus } from "@discordjs/voice";
 import {
 	AttachmentBuilder,
 	ChannelType,
@@ -13,6 +13,7 @@ import {
 import { PREDEFINED_FILTERS, type LoopMode, type Player } from "ziplayer";
 import type { ZiMusicBotEngine } from "../core/musicEngine.js";
 import { exportTrackToMp3Buffer } from "../core/exporter.js";
+import { waitForAudioDelivery } from "../core/playbackHealth.js";
 import type { PlayerUserData } from "../types/bot.js";
 import {
 	buildFullLyricsEmbed,
@@ -115,6 +116,41 @@ export function validateMemberVoiceAccess(
 	return { ok: true, voiceChannel };
 }
 
+/** Check audio-specific permissions even when 24/7 already joined the room. */
+export function getVoicePlaybackIssue(member: GuildMember, channel: VoiceBasedChannel): string | null {
+	const me = member.guild.members.me;
+	if (!me) return null;
+	const permissions = channel.permissionsFor(me);
+	if (permissions && channel.type !== ChannelType.GuildStageVoice && !permissions.has(PermissionFlagsBits.Speak)) {
+		return `Bot thiếu quyền **Nói (Speak)** trong <#${channel.id}>. Hãy bật quyền này cho bot trong cài đặt kênh.`;
+	}
+	const voice = me.voice;
+	if (voice?.channelId === channel.id && voice.serverMute) {
+		return "Bot đang bị quản trị viên tắt tiếng trong phòng thoại. Hãy bỏ tắt tiếng máy chủ cho bot.";
+	}
+	if (voice?.channelId === channel.id && voice.selfMute) {
+		return "Bot đang tự tắt mic. Hãy khởi động lại bot rồi thử phát lại.";
+	}
+	return null;
+}
+
+class VoicePlaybackError extends Error {}
+
+async function prepareVoiceForPlayback(member: GuildMember, channel: VoiceBasedChannel): Promise<void> {
+	const issue = getVoicePlaybackIssue(member, channel);
+	if (issue) throw new VoicePlaybackError(issue);
+
+	// A Stage audience member can join successfully while remaining inaudible.
+	const voice = member.guild.members.me?.voice;
+	if (channel.type === ChannelType.GuildStageVoice && voice?.channelId === channel.id && voice.suppress) {
+		try {
+			await voice.setSuppressed(false);
+		} catch {
+			throw new VoicePlaybackError("Bot đang là khán giả trong Stage. Hãy mời bot làm diễn giả hoặc dùng phòng thoại thường.");
+		}
+	}
+}
+
 export class MusicCommandActions {
 	constructor(private readonly engine: ZiMusicBotEngine) {}
 
@@ -151,6 +187,11 @@ export class MusicCommandActions {
 			await ctx.reply({ embeds: [infoEmbed(access.reason, COLORS.ERROR)], ephemeral: true });
 			return;
 		}
+		const voiceIssue = getVoicePlaybackIssue(ctx.member, access.voiceChannel);
+		if (voiceIssue) {
+			await ctx.reply({ embeds: [infoEmbed(`❌ ${voiceIssue}`, COLORS.ERROR)], ephemeral: true });
+			return;
+		}
 
 		await ctx.defer();
 
@@ -162,24 +203,37 @@ export class MusicCommandActions {
 			});
 
 			await this.engine.ensureConnected(player, access.voiceChannel);
+			await prepareVoiceForPlayback(ctx.member, access.voiceChannel);
 
-			const wasAlreadyPlaying = Boolean(player.currentTrack && (player.isPlaying || player.isPaused));
+			const wasAlreadyPlaying = Boolean(player.currentTrack && (
+				player.isPlaying || player.isPaused || player.isBuffering || player.audioPlayer.state.status === AudioPlayerStatus.AutoPaused
+			));
 			const beforeSize = player.queueSize;
 
 			const ok = await player.play(effectiveQuery, ctx.userId);
 			if (!ok) {
+				console.warn(`[Playback] Không thể tìm hoặc tải luồng nhạc trong server ${ctx.guild.id}.`);
 				await ctx.reply({
-					embeds: [infoEmbed(`❌ Không tìm thấy kết quả phù hợp cho: \`${truncate(effectiveQuery, 120)}\``, COLORS.ERROR)],
+					embeds: [infoEmbed("❌ Không tìm thấy bài hoặc không tải được nguồn âm thanh. Hãy thử link khác và kiểm tra log Botkeep nếu lỗi tiếp diễn.", COLORS.ERROR)],
 				});
 				return;
 			}
 
 			const addedCount = Math.max(0, player.queueSize - beforeSize);
+			const ttsActive = player.connection?.state.status === VoiceConnectionStatus.Ready &&
+				player.connection.state.subscription?.player === player.runtimeGraph.ttsController.player;
+			const queueHint = player.volume <= 0
+				? "\n🔇 Âm lượng đang là 0; dùng `/volume 80` để bật tiếng."
+				: ttsActive
+					? "\n🗣️ Bot đang đọc TTS; nhạc sẽ tiếp tục sau đó."
+					: player.audioPlayer.state.status === AudioPlayerStatus.Paused
+						? "\n⏸️ Nhạc đang tạm dừng; dùng `/resume` để phát tiếp."
+						: "";
 			if (wasAlreadyPlaying && addedCount > 1) {
 				await ctx.reply({
 					embeds: [
 						infoEmbed(
-							`✅ Đã thêm **${addedCount}** bài hát từ \`${truncate(effectiveQuery, 100)}\` vào hàng đợi!`,
+							`✅ Đã thêm **${addedCount}** bài hát từ \`${truncate(effectiveQuery, 100)}\` vào hàng đợi!${queueHint}`,
 							COLORS.PLAYING,
 						),
 					],
@@ -189,20 +243,31 @@ export class MusicCommandActions {
 				await ctx.reply({
 					embeds: [
 						infoEmbed(
-							`✅ Đã thêm vào hàng đợi (#${player.queueSize}): **${truncate(last?.title || effectiveQuery, 120)}** \`[${formatDuration(last?.duration, last?.isLive)}]\``,
+							`✅ Đã thêm vào hàng đợi (#${player.queueSize}): **${truncate(last?.title || effectiveQuery, 120)}** \`[${formatDuration(last?.duration, last?.isLive)}]\`${queueHint}`,
 							COLORS.PLAYING,
 						),
 					],
 				});
 			} else {
-				const current = player.currentTrack;
+				const title = truncate(player.currentTrack?.title || effectiveQuery, 140);
+				const delivery = await waitForAudioDelivery(player);
+				const descriptions: Record<typeof delivery, string> = {
+					delivering: `🎶 Đang gửi âm thanh: **${title}** tại <#${access.voiceChannel.id}>.`,
+					muted: `🔇 Đã tải **${title}** nhưng âm lượng đang là 0. Dùng \`/volume 80\` để bật tiếng.`,
+					paused: `⏸️ Đã nhận **${title}** nhưng trình phát đang tạm dừng. Hãy thử \`/resume\`.`,
+					tts: `🗣️ Đã nhận **${title}**. Bot đang đọc TTS; hãy đợi TTS kết thúc.`,
+					disconnected: `⚠️ Đã nhận **${title}** nhưng kết nối thoại chưa sẵn sàng. Hãy kiểm tra log Botkeep.`,
+					"no-subscription": `⚠️ Đã nhận **${title}** nhưng trình phát chưa nối được với voice. Hãy kiểm tra log Botkeep.`,
+					stopped: `⚠️ Luồng **${title}** đã dừng trước khi xác nhận có gói âm thanh. Hãy thử link khác và xem log Botkeep.`,
+					replaced: "⏭️ Yêu cầu phát đã thay đổi trong lúc bot chuẩn bị âm thanh.",
+					buffering: `⏳ Đã nhận **${title}** nhưng chưa xác nhận được gói âm thanh. Hãy kiểm tra log Botkeep nếu vẫn im lặng.`,
+					external: `🎵 Đã gửi yêu cầu phát **${title}** tới trình phát ngoài.`,
+				};
+				if (!["delivering", "external", "replaced"].includes(delivery)) {
+					console.warn(`[Playback] Chưa xác nhận âm thanh server=${player.guildId} result=${delivery} voice=${player.connection?.state.status ?? "none"} audio=${player.audioPlayer.state.status} volume=${player.volume}`);
+				}
 				await ctx.reply({
-					embeds: [
-						infoEmbed(
-							`🎶 Đang tải & phát: **${truncate(current?.title || effectiveQuery, 140)}** tại <#${access.voiceChannel.id}>`,
-							COLORS.PLAYING,
-						),
-					],
+					embeds: [infoEmbed(descriptions[delivery], delivery === "delivering" ? COLORS.PLAYING : COLORS.INFO)],
 				});
 			}
 		} catch (err) {
@@ -272,6 +337,11 @@ export class MusicCommandActions {
 			await ctx.reply({ embeds: [infoEmbed(access.reason, COLORS.ERROR)], ephemeral: true });
 			return;
 		}
+		const voiceIssue = getVoicePlaybackIssue(ctx.member, access.voiceChannel);
+		if (voiceIssue) {
+			await ctx.reply({ embeds: [infoEmbed(`❌ ${voiceIssue}`, COLORS.ERROR)], ephemeral: true });
+			return;
+		}
 
 		await ctx.defer();
 		try {
@@ -281,6 +351,7 @@ export class MusicCommandActions {
 				textChannelId: ctx.textChannelId,
 			});
 			await this.engine.ensureConnected(player, access.voiceChannel);
+			await prepareVoiceForPlayback(ctx.member, access.voiceChannel);
 
 			const ttsResult = await withTtsSearchTimeout(
 				this.engine.ttsPlugin.search(`tts:${cleaned}`, ctx.userId),
@@ -309,7 +380,9 @@ export class MusicCommandActions {
 			console.error(`[TTS] Lỗi trong server ${ctx.guild.id}:`, err instanceof Error ? err.message : err);
 			const message = err instanceof TtsSearchTimeoutError
 				? "❌ Dịch vụ TTS phản hồi quá lâu. Hãy thử lại sau và kiểm tra kết nối mạng của bot."
-				: "❌ Không thể tạo hoặc phát giọng đọc TTS. Hãy thử lại và kiểm tra log Botkeep nếu lỗi tiếp diễn.";
+				: err instanceof VoicePlaybackError
+					? `❌ ${err.message}`
+					: "❌ Không thể tạo hoặc phát giọng đọc TTS. Hãy thử lại và kiểm tra log Botkeep nếu lỗi tiếp diễn.";
 			await ctx.reply({ embeds: [infoEmbed(message, COLORS.ERROR)], ephemeral: true });
 		}
 	}

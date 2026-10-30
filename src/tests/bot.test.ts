@@ -3,18 +3,22 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Readable } from "node:stream";
-import { VoiceConnectionStatus } from "@discordjs/voice";
-import { ChannelType, Collection, GatewayIntentBits, MessageFlags } from "discord.js";
+import { EventEmitter } from "node:events";
+import { PassThrough, Readable } from "node:stream";
+import { AudioPlayerStatus, createAudioResource, StreamType, VoiceConnectionStatus } from "@discordjs/voice";
+import { ChannelType, Collection, GatewayIntentBits, MessageFlags, PermissionFlagsBits } from "discord.js";
+import OpusScript from "opusscript";
 import { PREDEFINED_FILTERS, type Track } from "ziplayer";
 import { assertBotCredentials, loadConfig, resolveAndBindFfmpeg } from "../config.js";
 import { exportTrackToMp3Buffer } from "../core/exporter.js";
 import { SessionPersistence } from "../core/persistence.js";
 import { AlwaysOnVoiceStore } from "../core/alwaysOnStore.js";
 import { buildSlashCommands } from "../handlers/slashDefinitions.js";
-import { createBotInstance } from "../index.js";
+import { createBotInstance, supportsVoiceRuntime } from "../index.js";
+import { waitForAudioDelivery } from "../core/playbackHealth.js";
+import { installManagedAudioResources } from "../core/managedAudioResource.js";
 import { resolveInteractionGuildAndMember } from "../handlers/interactionHandler.js";
-import { validateMemberVoiceAccess, type CommandContext, type ReplyPayload } from "../handlers/musicActions.js";
+import { getVoicePlaybackIssue, validateMemberVoiceAccess, type CommandContext, type ReplyPayload } from "../handlers/musicActions.js";
 import {
 	buildFullLyricsEmbed,
 	buildHelpEmbed,
@@ -820,11 +824,30 @@ function mockVoiceRoom(guildId = "guild-247", voiceChannelId = "voice-247") {
 }
 
 function fakeReadyConnection(channelId: string) {
-	return {
-		joinConfig: { channelId },
-		state: { status: VoiceConnectionStatus.Ready },
-		destroy: () => undefined,
-	} as any;
+	const connection: any = new EventEmitter();
+	connection.joinConfig = { channelId, selfMute: false, selfDeaf: true };
+	connection.state = { status: VoiceConnectionStatus.Ready };
+	connection.packets = [] as Buffer[];
+	connection.subscribe = (audioPlayer: any) => {
+		const previous = connection.state.subscription;
+		const subscription = audioPlayer.subscribe(connection);
+		connection.state = { ...connection.state, subscription };
+		previous?.unsubscribe();
+		return subscription;
+	};
+	connection.onSubscriptionRemoved = (subscription: any) => {
+		if (connection.state.subscription === subscription) delete connection.state.subscription;
+	};
+	connection.prepareAudioPacket = (packet: Buffer) => {
+		if (connection.packets.length < 500) connection.packets.push(Buffer.from(packet));
+	};
+	connection.dispatchAudio = () => undefined;
+	connection.setSpeaking = () => undefined;
+	connection.destroy = () => {
+		connection.state.subscription?.unsubscribe();
+		connection.state = { status: VoiceConnectionStatus.Destroyed };
+	};
+	return connection;
 }
 
 test("24/7 storage serializes changes, restores them, and never overwrites corrupt data", async () => {
@@ -1376,5 +1399,295 @@ test("auto-reply is wired into the existing bot without overwriting the music se
 		await engine.shutdown();
 		await client.destroy();
 		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("voice runtime requirement matches the actual Discord voice dependency", () => {
+	assert.equal(supportsVoiceRuntime("20.20.2"), false);
+	assert.equal(supportsVoiceRuntime("22.11.9"), false);
+	assert.equal(supportsVoiceRuntime("22.12.0"), true);
+	assert.equal(supportsVoiceRuntime("24.0.0"), true);
+	assert.equal(supportsVoiceRuntime("bad-version"), false);
+});
+
+test("playback checks Speak and server mute even when 24/7 already connected", async () => {
+	const { client, engine, actions } = createBotInstance({ DISCORD_TOKEN: "dummy", ENABLE_PERSISTENCE: "false" });
+	try {
+		const settings = { speak: false };
+		const voice = { channelId: "voice-permissions", serverMute: false, selfMute: false };
+		const me = { voice };
+		const guild = { id: "guild-permissions", members: { me } };
+		const channel: any = {
+			id: "voice-permissions", guild, guildId: guild.id, type: ChannelType.GuildVoice,
+			permissionsFor: () => ({ has: (permission: bigint) => permission !== PermissionFlagsBits.Speak || settings.speak }),
+		};
+		const member: any = { guild, voice: { channel } };
+		const existing: any = { destroyed: false, connection: { joinConfig: { channelId: channel.id } } };
+		(engine.manager as any).get = () => existing;
+		const replies: ReplyPayload[] = [];
+		let deferred = 0;
+		const ctx: CommandContext = {
+			guild: guild as any, member, userId: "u", textChannelId: "text",
+			defer: async () => { deferred++; }, reply: async (reply) => { replies.push(reply); },
+		};
+		assert.equal(validateMemberVoiceAccess(member, existing).ok, true, "Room access alone does not check Speak for an existing connection");
+		assert.match(getVoicePlaybackIssue(member, channel) ?? "", /Speak/);
+		await actions.play(ctx, "a song");
+		assert.match(replies.at(-1)?.embeds?.[0].data.description ?? "", /Speak/);
+		await actions.tts(ctx, "hello");
+		assert.match(replies.at(-1)?.embeds?.[0].data.description ?? "", /Speak/);
+		assert.equal(deferred, 0, "Known permission failures should be reported immediately");
+
+		settings.speak = true;
+		voice.serverMute = true;
+		await actions.play(ctx, "a song");
+		assert.match(replies.at(-1)?.embeds?.[0].data.description ?? "", /quản trị viên tắt tiếng/);
+		voice.serverMute = false;
+		voice.selfMute = true;
+		assert.match(getVoicePlaybackIssue(member, channel) ?? "", /tự tắt mic/);
+	} finally {
+		await engine.shutdown();
+		await client.destroy();
+	}
+});
+
+test("stage playback reports when the bot cannot become a speaker", async () => {
+	const { client, engine, actions } = createBotInstance({ DISCORD_TOKEN: "dummy", ENABLE_PERSISTENCE: "false" });
+	try {
+		const voice = { channelId: "stage-1", suppress: true, setSuppressed: async () => { throw new Error("not permitted"); } };
+		const guild = { id: "guild-stage", members: { me: { voice } } };
+		const channel: any = {
+			id: "stage-1", guild, type: ChannelType.GuildStageVoice,
+			permissionsFor: () => ({ has: () => true }),
+		};
+		let played = false;
+		engine.getOrCreatePlayer = async () => ({ play: async () => { played = true; return true; } }) as any;
+		engine.ensureConnected = async () => undefined;
+		const replies: ReplyPayload[] = [];
+		const ctx: CommandContext = {
+			guild: guild as any, member: { guild, voice: { channel } } as any,
+			userId: "u", textChannelId: "text", defer: async () => undefined,
+			reply: async (reply) => { replies.push(reply); },
+		};
+		await actions.play(ctx, "a song");
+		assert.equal(played, false);
+		assert.match(replies.at(-1)?.embeds?.[0].data.description ?? "", /khán giả.*Stage/);
+	} finally {
+		await engine.shutdown();
+		await client.destroy();
+	}
+});
+
+test("ready voice repairs missing or stale music subscriptions without interrupting active TTS or mirrors", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-voice-sub-"));
+	const { client, engine } = createBotInstance({
+		DISCORD_TOKEN: "dummy", ENABLE_PERSISTENCE: "false", PERSISTENCE_FILE: path.join(dir, "sessions.json"), ENABLE_LYRICS: "false",
+	});
+	let player: any;
+	let follower: any;
+	let stalledTts: PassThrough | undefined;
+	try {
+		const { room, guild } = mockVoiceRoom("guild-sub", "voice-sub");
+		player = await engine.getOrCreatePlayer({ guildId: guild.id, voiceChannelId: room.id, textChannelId: "text" });
+		const connection = fakeReadyConnection(room.id);
+		player.connection = connection;
+		await engine.ensureConnected(player, room);
+		assert.equal(connection.state.subscription.player, player.audioPlayer);
+		const first = connection.state.subscription;
+		await engine.ensureConnected(player, room);
+		assert.equal(connection.state.subscription, first, "A healthy subscription must not be churned");
+		assert.doesNotThrow(() => connection.emit("error", new Error("simulated voice network error")));
+
+		const tts = player.runtimeGraph.ttsController.player;
+		stalledTts = new PassThrough();
+		tts.play(createAudioResource(stalledTts, { inputType: StreamType.Raw }) as any);
+		assert.equal(tts.state.status, AudioPlayerStatus.Buffering);
+		connection.subscribe(tts);
+		await engine.ensureConnected(player, room);
+		assert.equal(connection.state.subscription.player, tts, "An active TTS interruption must not be stolen");
+
+		tts.stop(true);
+		await engine.ensureConnected(player, room);
+		assert.equal(connection.state.subscription.player, player.audioPlayer, "An idle stale TTS subscription must be repaired");
+
+		follower = await engine.getOrCreatePlayer({ guildId: "guild-leader", voiceChannelId: "voice-leader", textChannelId: "text" });
+		connection.subscribe(follower.audioPlayer);
+		player.runtimeGraph.forwardController.mode = "forward";
+		const mirrorSub = connection.state.subscription;
+		await engine.ensureConnected(player, room);
+		assert.equal(connection.state.subscription, mirrorSub, "Mirror mode must keep the leader player");
+		player.runtimeGraph.forwardController.mode = "native";
+		await engine.ensureConnected(player, room);
+		assert.equal(connection.state.subscription.player, player.audioPlayer);
+		connection.state.subscription.unsubscribe();
+		connection.subscribe = () => undefined;
+		await assert.rejects(engine.ensureConnected(player, room), /Không thể nối trình phát nhạc/);
+	} finally {
+		stalledTts?.destroy();
+		if (player) player.connection = null;
+		if (follower) follower.connection = null;
+		await engine.shutdown();
+		await client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("a connecting voice session is awaited before music can use it", async () => {
+	const { client, engine } = createBotInstance({ DISCORD_TOKEN: "dummy", ENABLE_PERSISTENCE: "false", ENABLE_LYRICS: "false" });
+	let player: any;
+	try {
+		const { room, guild } = mockVoiceRoom("guild-wait", "voice-wait");
+		player = await engine.getOrCreatePlayer({ guildId: guild.id, voiceChannelId: room.id, textChannelId: "text" });
+		const connection = fakeReadyConnection(room.id);
+		connection.state = { status: VoiceConnectionStatus.Connecting };
+		player.connection = connection;
+		let completed = false;
+		const pending = engine.ensureConnected(player, room).then(() => { completed = true; });
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(completed, false);
+		connection.state = { status: VoiceConnectionStatus.Ready };
+		connection.emit(VoiceConnectionStatus.Ready);
+		await pending;
+		assert.equal(connection.state.subscription.player, player.audioPlayer);
+	} finally {
+		if (player) player.connection = null;
+		await engine.shutdown();
+		await client.destroy();
+	}
+});
+
+test("audio-delivery status does not confuse a loaded resource with packets being sent", async () => {
+	const audio: any = { state: { status: AudioPlayerStatus.Playing, playbackDuration: 20, resource: { playbackDuration: 0 } } };
+	const tts: any = { state: { status: AudioPlayerStatus.Idle } };
+	const connection: any = { state: { status: VoiceConnectionStatus.Ready, subscription: { player: audio } } };
+	const player: any = {
+		destroyed: false, playbackMode: "native", currentTrack: sampleTrack(1), volume: 80,
+		audioPlayer: audio, connection, runtimeGraph: { ttsController: { player: tts } },
+	};
+	assert.equal(await waitForAudioDelivery(player, 0), "buffering", "Silence padding alone is not proof of source packet progress");
+	audio.state.resource.playbackDuration = 20;
+	assert.equal(await waitForAudioDelivery(player, 0), "delivering");
+	player.volume = 0;
+	assert.equal(await waitForAudioDelivery(player, 0), "muted");
+	player.volume = 80;
+	connection.state.subscription = undefined;
+	assert.equal(await waitForAudioDelivery(player, 0), "no-subscription");
+	connection.state.subscription = { player: tts };
+	tts.state.status = AudioPlayerStatus.Playing;
+	assert.equal(await waitForAudioDelivery(player, 0), "tts");
+	tts.state.status = AudioPlayerStatus.Idle;
+	assert.equal(await waitForAudioDelivery(player, 0), "no-subscription");
+	connection.state.subscription = { player: audio };
+	audio.state = { status: AudioPlayerStatus.AutoPaused };
+	assert.equal(await waitForAudioDelivery(player, 0), "paused");
+	connection.state = { status: VoiceConnectionStatus.Connecting };
+	assert.equal(await waitForAudioDelivery(player, 0), "disconnected");
+	player.playbackMode = "forward";
+	assert.equal(await waitForAudioDelivery(player, 0), "external");
+});
+
+test("local WAV produces non-silent Opus packets and releases FFmpeg on stop", { skip: process.platform === "win32" }, async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-real-audio-"));
+	const wavPath = path.join(dir, "tone.wav");
+	const pidPath = path.join(dir, "ffmpeg.pid");
+	const wrapper = path.join(dir, "ffmpeg-wrapper");
+	await fs.writeFile(wavPath, createSampleWavBuffer(3_000, 48_000));
+	const { client, engine } = createBotInstance({
+		DISCORD_TOKEN: "dummy", ENABLE_PERSISTENCE: "false", PERSISTENCE_FILE: path.join(dir, "sessions.json"),
+		ENABLE_LYRICS: "false", LOW_PERFORMANCE: "true",
+	});
+	let player: any;
+	let decoderPid: number | undefined;
+	const decoder = new OpusScript(48_000, 2, OpusScript.Application.AUDIO);
+	try {
+		assert.ok(engine.config.ffmpegPath);
+		await fs.writeFile(wrapper, `#!/bin/sh\nprintf '%s' "$$" > ${JSON.stringify(pidPath)}\nexec ${JSON.stringify(engine.config.ffmpegPath)} "$@"\n`, { mode: 0o755 });
+		const { room, guild } = mockVoiceRoom("guild-audio", "voice-audio");
+		player = await engine.getOrCreatePlayer({ guildId: guild.id, voiceChannelId: room.id, textChannelId: "text" });
+		installManagedAudioResources(player, wrapper);
+		// Related searches are irrelevant to the audio pipeline and must not use the network in this test.
+		player.pluginManager.getRelatedTracks = async () => [];
+		const connection = fakeReadyConnection(room.id);
+		player.connection = connection;
+		await engine.ensureConnected(player, room);
+		const track: Track = {
+			id: "local-tone", title: "440Hz test tone", url: wavPath, duration: 3_000,
+			requestedBy: "test", source: "attachments", metadata: { extension: "wav" },
+		};
+		assert.equal(await player.play(track, "test"), true);
+		assert.equal(await waitForAudioDelivery(player, 4_000), "delivering");
+		const deadline = Date.now() + 2_000;
+		while (connection.packets.length < 12 && Date.now() < deadline) {
+			await new Promise<void>((resolve) => setTimeout(resolve, 25));
+		}
+		const packets: Buffer[] = connection.packets.filter((packet: Buffer) => packet.length > 3);
+		assert.ok(packets.length >= 5, `Expected non-silent Opus packets; received ${packets.length}`);
+		let power = 0;
+		let samples = 0;
+		for (const packet of packets.slice(0, 12)) {
+			const pcm = decoder.decode(packet);
+			for (let i = 0; i < pcm.length; i += 2) {
+				const value = pcm.readInt16LE(i);
+				power += value * value;
+				samples++;
+			}
+		}
+		assert.ok(samples > 0 && Math.sqrt(power / samples) > 50, "Decoded PCM must contain real, non-silent audio");
+		decoderPid = Number(await fs.readFile(pidPath, "utf8"));
+		assert.ok(decoderPid > 0);
+		await player.action({ type: "STOP" });
+		let stillRunning = true;
+		const exitDeadline = Date.now() + 2_000;
+		while (stillRunning && Date.now() < exitDeadline) {
+			try { process.kill(decoderPid, 0); } catch { stillRunning = false; }
+			if (stillRunning) await new Promise<void>((resolve) => setTimeout(resolve, 25));
+		}
+		assert.equal(stillRunning, false, "Stopping must release the FFmpeg child process");
+		decoderPid = undefined;
+	} finally {
+		decoder.delete();
+		if (decoderPid) { try { process.kill(decoderPid, "SIGKILL"); } catch { /* already stopped */ } }
+		if (player) {
+			await player.action({ type: "STOP" });
+			player.connection?.state.subscription?.unsubscribe();
+			player.connection = null;
+		}
+		await engine.shutdown();
+		await client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("play command distinguishes actual packet progress from zero volume and failed sources", async () => {
+	const { client, engine, actions } = createBotInstance({ DISCORD_TOKEN: "dummy", ENABLE_PERSISTENCE: "false" });
+	try {
+		const audio = { state: { status: AudioPlayerStatus.Playing, playbackDuration: 20, resource: { playbackDuration: 20 } } };
+		const tts = { state: { status: AudioPlayerStatus.Idle } };
+		const fakePlayer: any = {
+			guildId: "guild-action", currentTrack: sampleTrack(1), isPlaying: false, isPaused: false, isBuffering: false,
+			queueSize: 0, volume: 80, destroyed: false, playbackMode: "native", audioPlayer: audio,
+			runtimeGraph: { ttsController: { player: tts } },
+			connection: { joinConfig: { channelId: "voice-action" }, state: { status: VoiceConnectionStatus.Ready, subscription: { player: audio } } },
+			play: async () => true,
+		};
+		engine.getOrCreatePlayer = async () => fakePlayer;
+		engine.ensureConnected = async () => undefined;
+		const member = { guild: { members: { me: null } }, voice: { channel: { id: "voice-action" } } };
+		const replies: ReplyPayload[] = [];
+		const ctx: CommandContext = {
+			guild: { id: "guild-action" } as any, member: member as any, userId: "u", textChannelId: "t",
+			defer: async () => undefined, reply: async (reply) => { replies.push(reply); },
+		};
+		await actions.play(ctx, "song");
+		assert.match(replies.at(-1)?.embeds?.[0].data.description ?? "", /Đang gửi âm thanh/);
+		fakePlayer.volume = 0;
+		await actions.play(ctx, "song");
+		assert.match(replies.at(-1)?.embeds?.[0].data.description ?? "", /âm lượng đang là 0/);
+		fakePlayer.play = async () => false;
+		await actions.play(ctx, "song");
+		assert.match(replies.at(-1)?.embeds?.[0].data.description ?? "", /không tải được nguồn âm thanh/);
+	} finally {
+		await engine.shutdown();
+		await client.destroy();
 	}
 });

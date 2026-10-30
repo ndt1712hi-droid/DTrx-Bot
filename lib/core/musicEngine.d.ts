@@ -14,6 +14,7 @@ export declare class ZiMusicBotEngine {
     private readonly emptyChannelTimers;
     private readonly alwaysOnStore;
     private readonly guardedPlayers;
+    private readonly monitoredConnections;
     private readonly voiceModeLocks;
     private readonly reconnectPending;
     private readonly suppressedSessionRestores;
@@ -56,6 +57,8 @@ export declare class ZiMusicBotEngine {
         voiceChannelId: string;
         textChannelId: string;
     }): Promise<Player>;
+    /** A ready voice connection can still be detached from the music player. */
+    private ensureAudioSubscription;
     /**
      * Connects the player to the target Discord voice/stage channel if not already connected there.
      */

@@ -14,3 +14,4 @@ export declare function createBotInstance(customEnv?: NodeJS.ProcessEnv, options
     autoReplyStore: AutoReplyStore;
     autoReplyActions: AutoReplyActions;
 };
+export declare function supportsVoiceRuntime(version?: string): boolean;
