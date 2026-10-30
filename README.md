@@ -64,7 +64,7 @@ DISCORD_GUILD_ID=
 
 ### 3. Cài đặt & Khởi chạy
 
-Cần **Node.js 22.12 trở lên** (khuyến nghị Node 22 LTS hoặc mới hơn); thư viện Discord voice hiện không hỗ trợ Node 20. Trên Botkeep, chọn Node 22 rồi cập nhật/redeploy mã mới. Giữ thư mục `data/` khi redeploy để không mất cấu hình 24/7, auto-reply và welcome/goodbye.
+Cần **Node.js 22.12 trở lên** (khuyến nghị Node 22 LTS hoặc mới hơn); thư viện Discord voice hiện không hỗ trợ Node 20. Trên Botkeep, chọn Node 22 hoặc 24. Nếu dùng GitHub, vào tab **GitHub** của server để cập nhật/pull nhánh `main` trước, rồi redeploy/restart; theo [Botkeep FAQ](https://botkeep.cloud/faq), chỉ Redeploy không tự lấy commit GitHub mới. Giữ thư mục `data/` khi cập nhật để không mất cấu hình 24/7, auto-reply và welcome/goodbye.
 
 ```bash
 # Cài đặt thư viện
@@ -150,6 +150,7 @@ docker run -d --name ziplayer-bot --env-file .env -v "$(pwd)/data:/app/data" --r
 - Bot cần quyền **View Channel**, **Send Messages** và **Attach Files** trong kênh. Banner JPG dùng nền mặc định và font tiếng Việt trong `assets/`, hoặc nền do quản trị viên tải lên, cùng tên/avatar thực của thành viên, tên server và số thành viên; khi avatar không tải được sẽ dùng hình mặc định. Nếu không tạo/gửi được ảnh hoặc hàng đợi ảnh quá tải, bot cố gửi lời chào dạng chữ và ghi log `[Greeting]`. Bot tải thư viện ảnh khi cần và chỉ xử lý một banner mỗi lần.
 - Welcome/goodbye ban đầu **tắt** và được lưu riêng theo server trong `data/member-greetings.json`, cùng thư mục với `PERSISTENCE_FILE`. Nếu `PERSISTENCE_FILE` trùng tên này, bot dùng `member-greetings.json.settings.json` để tránh ghi đè. Ảnh nền tự tải được tối ưu và lưu riêng trong `data/member-banners/`; nếu đường dẫn đó trùng `PERSISTENCE_FILE`, dùng `member-banners.images/`. Giữ thư mục dữ liệu qua restart/redeploy. Nếu bot offline, các sự kiện xảy ra lúc đó không được phát lại; goodbye cũng áp dụng cho thành viên bị kick/ban.
 - Nếu chưa bật Server Members Intent, bot thử khởi động ở chế độ tương thích để nhạc tiếp tục hoạt động, nhưng không tự nhận sự kiện vào/rời; `status`/`set` sẽ nhắc bật intent. `/test` vẫn có thể gửi thử sau khi cấu hình. Nếu vẫn lỗi, kiểm tra log `[Gateway]`/`[Greeting]` và quyền kênh.
+- Nếu không thấy `/welcome` hoặc `/goodbye`, dùng tài khoản có quyền **Manage Server** trong server đã thêm bot. Xem Console sau khi khởi động: `[Runtime] DTrx-Bot 1.1.1` cho biết mã phiên bản mới đang chạy; dòng `Đã đăng ký 30 Slash Commands ... gồm /welcome và /goodbye` cho biết đăng ký thành công. Kiểm tra `AUTO_DEPLOY_COMMANDS=true`; nếu có `DISCORD_GUILD_ID`, lệnh chỉ đăng ký cho server có ID đó, còn lệnh global có thể cần thời gian cập nhật. Tìm lỗi `Không thể tự động đăng ký Slash Commands` nếu không thấy dòng thành công.
 
 ### Treo bot trong phòng thoại 24/7
 

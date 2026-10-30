@@ -1,4 +1,5 @@
 import path from "node:path";
+import { createRequire } from "node:module";
 import { generateDependencyReport } from "@discordjs/voice";
 import { ActivityType, Client, Events, GatewayIntentBits, Options, Partials } from "discord.js";
 import { assertBotCredentials, ensureFfmpegInstalled, loadConfig } from "./config.js";
@@ -148,6 +149,8 @@ export function createBotInstance(customEnv?: NodeJS.ProcessEnv, options: Create
 			} catch (err) {
 				console.warn("⚠️ Không thể tự động đăng ký Slash Commands:", err instanceof Error ? err.message : err);
 			}
+		} else {
+			console.warn("[Commands] Tự đăng ký lệnh đang TẮT (AUTO_DEPLOY_COMMANDS=false); bật lại hoặc chạy npm run deploy.");
 		}
 
 		engine.persistence.startPeriodicSave(engine.manager, 30_000);
@@ -207,7 +210,10 @@ export function supportsVoiceRuntime(version = process.versions.node): boolean {
 }
 
 async function main() {
-	console.log(`[Runtime] Node.js ${process.version}`);
+	let release = "không rõ";
+	try { release = (createRequire(import.meta.url)("../package.json") as { version?: string }).version ?? release; }
+	catch { /* Continue running if package metadata is unavailable. */ }
+	console.log(`[Runtime] DTrx-Bot ${release} | Node.js ${process.version}`);
 	if (!supportsVoiceRuntime()) {
 		console.warn("[Runtime] Voice yêu cầu Node.js 22.12 trở lên. Hãy chọn Node 22 hoặc mới hơn trên Botkeep.");
 	}
