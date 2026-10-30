@@ -25,9 +25,10 @@ Bot nghe nhạc Discord đa năng, hiệu năng cao được xây dựng hoàn c
   - **AI Autoplay (`AiAutoplayExtension`)** — Gợi ý nhạc theo gu bằng Gemini khi cấu hình `GEMINI_API_KEY`.
   - **Lavalink (`lavalinkExt`)** — Hỗ trợ kết nối Lavalink Nodes ngoài khi cấu hình `LAVALINK_NODES`.
 - 🎮 **3 phương thức điều khiển song song**:
-  - **28 Slash Commands (`/play`, `/filter`...)** có **Autocomplete tìm kiếm bài hát & bộ lọc trực tiếp**.
+  - **30 Slash Commands (`/play`, `/filter`...)** có **Autocomplete tìm kiếm bài hát & bộ lọc trực tiếp**.
   - **Prefix Commands (`!play`, `!skip`, `!np`...)** nhanh gọn.
   - **Bảng điều khiển Nút bấm & Menu chọn Filter (Interactive Controller)** tự động cập nhật trạng thái và bảo vệ quyền điều khiển theo kênh thoại.
+- 👋 **Welcome / Goodbye:** Chọn kênh và nội dung riêng cho từng server; banner cá nhân hóa tên, avatar, tên server và số thành viên; tự tải nền riêng qua Discord.
 - 💾 **Tự động lưu & khôi phục phiên phát (`SessionPersistence`)**: Lưu hàng đợi định kỳ và khi tắt bot, tự động vào lại phòng phát tiếp khi bot khởi động lại.
 - 📥 **Xuất file MP3 trực tiếp (`/save`)**: Chuyển đổi bài đang phát (kèm hiệu ứng FFmpeg tùy chọn) thành file `.mp3` gửi thẳng vào kênh chat.
 - 📡 **Multi-Server Forward Mirror (`/mirror`)**: Đồng bộ luồng phát âm thanh trực tiếp từ một Server chính sang các Server phụ với mức tốn CPU cực thấp.
@@ -53,7 +54,7 @@ Sao chép file `.env.example` thành `.env` và điền Token của bạn:
 cp .env.example .env
 ```
 
-Tối thiểu bạn chỉ cần điền `DISCORD_TOKEN` trong `.env` (Bot sẽ tự nhận diện `CLIENT_ID` và đăng ký toàn bộ 28 Slash Commands khi khởi động nếu `AUTO_DEPLOY_COMMANDS=true`):
+Tối thiểu bạn chỉ cần điền `DISCORD_TOKEN` trong `.env` (Bot sẽ tự nhận diện `CLIENT_ID` và đăng ký toàn bộ 30 Slash Commands khi khởi động nếu `AUTO_DEPLOY_COMMANDS=true`):
 
 ```env
 DISCORD_TOKEN=your_discord_bot_token_here
@@ -63,7 +64,7 @@ DISCORD_GUILD_ID=
 
 ### 3. Cài đặt & Khởi chạy
 
-Cần **Node.js 22.12 trở lên** (khuyến nghị Node 22 LTS hoặc mới hơn); thư viện Discord voice hiện không hỗ trợ Node 20. Trên Botkeep, chọn Node 22 rồi cập nhật/redeploy mã mới. Giữ thư mục `data/` khi redeploy để không mất cấu hình 24/7 và auto-reply.
+Cần **Node.js 22.12 trở lên** (khuyến nghị Node 22 LTS hoặc mới hơn); thư viện Discord voice hiện không hỗ trợ Node 20. Trên Botkeep, chọn Node 22 rồi cập nhật/redeploy mã mới. Giữ thư mục `data/` khi redeploy để không mất cấu hình 24/7, auto-reply và welcome/goodbye.
 
 ```bash
 # Cài đặt thư viện
@@ -82,7 +83,7 @@ npm run dev
 *(Tùy chọn)* Chạy bằng **Docker**:
 ```bash
 docker build -t ziplayer-bot .
-docker run -d --name ziplayer-bot --env-file .env --restart unless-stopped ziplayer-bot
+docker run -d --name ziplayer-bot --env-file .env -v "$(pwd)/data:/app/data" --restart unless-stopped ziplayer-bot
 ```
 
 ---
@@ -96,6 +97,10 @@ docker run -d --name ziplayer-bot --env-file .env --restart unless-stopped zipla
 | `/tts <text>` | `!tts`, `!say` | Đọc văn bản thành tiếng nói trong kênh thoại |
 | `/247 on`, `/247 off`, `/247 status` | `!247 on`, `!247 off`, `!247 status` | Treo bot trong phòng thoại, tắt chế độ 24/7 hoặc xem trạng thái |
 | `/autoreply set`, `/autoreply remove`, `/autoreply list` | — | Quản trị viên thêm, xóa, xem câu trả lời tự động |
+| `/welcome set`, `/welcome test`, `/welcome status`, `/welcome off` | — | Cài đặt và thử chào thành viên kèm banner |
+| `/welcome banner`, `/welcome reset-banner` | — | Tải ảnh nền welcome hoặc khôi phục nền mặc định |
+| `/goodbye set`, `/goodbye test`, `/goodbye status`, `/goodbye off` | — | Cài đặt và thử thông báo tạm biệt kèm banner |
+| `/goodbye banner`, `/goodbye reset-banner` | — | Tải ảnh nền goodbye hoặc khôi phục nền mặc định |
 | `/pause` / `/resume` | `!pause` / `!resume` | Tạm dừng / Tiếp tục phát nhạc |
 | `/skip [to]` | `!skip [vị trí]`, `!s` | Bỏ qua bài hiện tại hoặc nhảy thẳng tới bài thứ `N` |
 | `/previous` | `!prev`, `!back` | Quay lại phát bài trước đó trong lịch sử |
@@ -133,6 +138,19 @@ docker run -d --name ziplayer-bot --env-file .env --restart unless-stopped zipla
 - Bắt buộc bật **Message Content Intent** tại Discord Developer Portal → Bot → Privileged Gateway Intents, lưu và khởi động lại bot. Nếu bot đang chạy chế độ dự phòng không có intent này, `/autoreply set` vẫn lưu được nhưng bot không thể đọc tin nhắn thường.
 - Bot chính tự đăng ký lệnh khi `AUTO_DEPLOY_COMMANDS=true`; nếu tắt, chạy `npm run deploy` sau khi cập nhật. Ví dụ ba file chạy riêng nằm ở `examples/auto-reply-bot/`, cấu hình một cặp câu bằng `.env`; ví dụ đó không bao gồm nhạc hay 24/7, không chạy đồng thời với bot chính bằng cùng token.
 
+### Chào và tạm biệt thành viên kèm banner
+
+1. Trong [Discord Developer Portal](https://discord.com/developers/applications), chọn ứng dụng → **Bot** → bật **Server Members Intent** → **Save Changes**, rồi khởi động lại bot. **Message Content Intent** vẫn cần bật riêng nếu dùng auto-reply và lệnh prefix.
+2. Cập nhật mã và cài dependency mới trên Botkeep, giữ Node 22.12+ (Node 24 cũng được), rồi redeploy/restart. Để `AUTO_DEPLOY_COMMANDS=true` cho bot tự đăng ký lệnh; nếu để `false`, chạy `npm run deploy` sau `npm run build`. Lệnh global có thể cần thời gian xuất hiện; `DISCORD_GUILD_ID` đăng ký cho một server thử nghiệm.
+3. Người có quyền **Manage Server (Quản lý máy chủ)** dùng `/welcome set`, chọn `channel` là kênh chữ và tùy chọn nhập `message`. Tương tự, dùng `/goodbye set` và chọn kênh tạm biệt; có thể dùng chung hoặc khác kênh. Nếu bỏ trống `message`, bot dùng nội dung mặc định, hoặc giữ nội dung cũ khi cấu hình lại.
+4. Dùng `/welcome test` và `/goodbye test` để gửi thử banner của chính bạn; `/welcome status` và `/goodbye status` để xem cấu hình; `/welcome off` và `/goodbye off` để tắt mà không xóa thiết lập. Bật lại bằng `set` và chọn kênh.
+5. Muốn thay nền, dùng `/welcome banner` rồi tải ảnh ở ô `image`; với goodbye dùng `/goodbye banner`. Hai nền độc lập theo từng server. Ảnh JPG, PNG hoặc WebP tối đa **3 MB**, tối đa **4096 px mỗi chiều và 8 triệu điểm ảnh**; khuyến nghị **1200×420**. Bot tự cắt giữa cho vừa khung, rồi ghép tên, avatar, tên server và số thành viên lên ảnh. Dùng `/welcome reset-banner` hoặc `/goodbye reset-banner` để khôi phục nền mặc định.
+6. Ví dụ nội dung: `Chào {user} đến với {server}! Hiện có {count} thành viên.` Biến hỗ trợ: `{user}` (mention thành viên khi welcome; tên khi goodbye), `{name}` (tên hiển thị), `{server}` (tên server), `{count}` (số thành viên). Mỗi nội dung tối đa 500 ký tự; mẫu thử không ping ai, và bot không ping `@everyone`, role hoặc người khác qua mẫu.
+
+- Bot cần quyền **View Channel**, **Send Messages** và **Attach Files** trong kênh. Banner JPG dùng nền mặc định và font tiếng Việt trong `assets/`, hoặc nền do quản trị viên tải lên, cùng tên/avatar thực của thành viên, tên server và số thành viên; khi avatar không tải được sẽ dùng hình mặc định. Nếu không tạo/gửi được ảnh hoặc hàng đợi ảnh quá tải, bot cố gửi lời chào dạng chữ và ghi log `[Greeting]`. Bot tải thư viện ảnh khi cần và chỉ xử lý một banner mỗi lần.
+- Welcome/goodbye ban đầu **tắt** và được lưu riêng theo server trong `data/member-greetings.json`, cùng thư mục với `PERSISTENCE_FILE`. Nếu `PERSISTENCE_FILE` trùng tên này, bot dùng `member-greetings.json.settings.json` để tránh ghi đè. Ảnh nền tự tải được tối ưu và lưu riêng trong `data/member-banners/`; nếu đường dẫn đó trùng `PERSISTENCE_FILE`, dùng `member-banners.images/`. Giữ thư mục dữ liệu qua restart/redeploy. Nếu bot offline, các sự kiện xảy ra lúc đó không được phát lại; goodbye cũng áp dụng cho thành viên bị kick/ban.
+- Nếu chưa bật Server Members Intent, bot thử khởi động ở chế độ tương thích để nhạc tiếp tục hoạt động, nhưng không tự nhận sự kiện vào/rời; `status`/`set` sẽ nhắc bật intent. `/test` vẫn có thể gửi thử sau khi cấu hình. Nếu vẫn lỗi, kiểm tra log `[Gateway]`/`[Greeting]` và quyền kênh.
+
 ### Treo bot trong phòng thoại 24/7
 
 1. Vào phòng thoại muốn treo bot, sau đó dùng `/247 on`.
@@ -151,17 +169,21 @@ Cấu hình phòng được lưu tại `data/voice-24-7.json` (cùng thư mục 
 ├── src/
 │   ├── index.ts                     # Điểm khởi chạy chính & quản lý vòng đời tiến trình
 │   ├── config.ts                    # Đọc cấu hình .env & tự động ánh xạ FFmpeg binary
-│   ├── deploy-commands.ts           # Đăng ký 28 Slash Commands lên Discord API
+│   ├── deploy-commands.ts           # Đăng ký 30 Slash Commands lên Discord API
 │   ├── core/
 │   │   ├── musicEngine.ts           # Quản lý ZiPlayer, Plugins, Extensions & Discord Events
 │   │   ├── persistence.ts           # Tự động lưu & khôi phục phiên nhạc qua JSON nguyên tử
 │   │   ├── alwaysOnStore.ts         # Lưu phòng thoại 24/7 riêng cho từng server
 │   │   ├── autoReplyStore.ts        # Lưu câu kích hoạt và trả lời theo từng server
+│   │   ├── memberGreetingStore.ts   # Lưu cấu hình welcome/goodbye theo server
+│   │   ├── memberBanner.ts          # Tạo banner JPG và xử lý ảnh tải lên có giới hạn
+│   │   ├── memberBannerStore.ts     # Lưu ảnh nền riêng của từng server
 │   │   └── exporter.ts              # Xuất luồng nhạc ZiPlayer sang MP3 qua FFmpeg
 │   ├── handlers/
-│   │   ├── slashDefinitions.ts      # Định nghĩa cấu trúc 28 Slash Commands
+│   │   ├── slashDefinitions.ts      # Định nghĩa cấu trúc 30 Slash Commands
 │   │   ├── musicActions.ts          # Xử lý nghiệp vụ thống nhất & kiểm tra quyền kênh thoại
 │   │   ├── autoReplyHandler.ts      # Trả lời tự động và quản lý bằng slash command
+│   │   ├── memberGreetingHandler.ts # Sự kiện vào/rời, hàng đợi banner & lệnh quản trị
 │   │   ├── interactionHandler.ts    # Xử lý Slash, Autocomplete, Nút bấm & Select Menu
 │   │   └── prefixHandler.ts         # Xử lý lệnh Prefix văn bản (!play, !skip...)
 │   ├── ui/
@@ -173,6 +195,7 @@ Cấu hình phòng được lưu tại `data/voice-24-7.json` (cùng thư mục 
 │   └── tests/
 │       └── bot.test.ts              # Bộ kiểm thử tự động toàn diện (Node Test Runner)
 ├── lib/                             # Mã JavaScript đã biên dịch sẵn sàng chạy Production
+├── assets/                          # Nền banner, font tiếng Việt và giấy phép font
 ├── .env.example                     # Mẫu cấu hình biến môi trường đầy đủ
 ├── Dockerfile                       # Cấu hình đóng gói Container
 └── package.json

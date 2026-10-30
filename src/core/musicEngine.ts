@@ -928,13 +928,15 @@ export class ZiMusicBotEngine {
 		return restoredCount;
 	}
 
-	async shutdown(): Promise<void> {
+	async shutdown(options: { saveSessions?: boolean } = {}): Promise<void> {
 		this.shuttingDown = true;
 		if (this.alwaysOnTimer) clearInterval(this.alwaysOnTimer);
 		this.alwaysOnTimer = null;
 		await Promise.allSettled([...this.voiceModeLocks.values()]);
 		this.persistence.stopPeriodicSave();
-		await this.persistence.saveAll(this.manager).catch(() => undefined);
+		// A client that never connected has no players; saving it would replace
+		// previously persisted sessions with an empty array during intent retry.
+		if (options.saveSessions !== false) await this.persistence.saveAll(this.manager).catch(() => undefined);
 		for (const guildId of [...this.refreshTimers.keys(), ...this.emptyChannelTimers.keys()]) {
 			this.clearGuildTimers(guildId);
 		}

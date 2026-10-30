@@ -13,6 +13,7 @@ import { PREDEFINED_FILTERS } from "ziplayer";
 import type { ZiMusicBotEngine } from "../core/musicEngine.js";
 import type { PlayerUserData } from "../types/bot.js";
 import type { AutoReplyActions } from "./autoReplyHandler.js";
+import type { MemberGreetingActions } from "./memberGreetingHandler.js";
 import {
 	buildFullLyricsEmbed,
 	buildNowPlayingPayload,
@@ -345,7 +346,12 @@ async function handleControllerComponent(
 	}
 }
 
-export function registerInteractionHandler(engine: ZiMusicBotEngine, actions: MusicCommandActions, autoReplyActions: AutoReplyActions): void {
+export function registerInteractionHandler(
+	engine: ZiMusicBotEngine,
+	actions: MusicCommandActions,
+	autoReplyActions: AutoReplyActions,
+	greetingActions?: MemberGreetingActions,
+): void {
 	const autocompleteValues = new AutocompleteValueStore();
 	engine.client.on("interactionCreate", async (interaction: Interaction) => {
 		try {
@@ -410,6 +416,24 @@ export function registerInteractionHandler(engine: ZiMusicBotEngine, actions: Mu
 				case "247":
 					await actions.alwaysOnVoice(ctx, interaction.options.getSubcommand());
 					break;
+				case "welcome":
+				case "goodbye": {
+					if (!greetingActions) {
+						await ctx.reply({ content: "❌ Chức năng chào thành viên chưa sẵn sàng.", ephemeral: true });
+						break;
+					}
+					const mode = interaction.options.getSubcommand();
+					const selected = mode === "set" ? interaction.options.getChannel("channel", true) : null;
+					await greetingActions.manage(
+						ctx,
+						interaction.commandName,
+						mode,
+						selected ? { id: selected.id, guildId: ctx.guild.id, type: selected.type } : null,
+						mode === "set" ? interaction.options.getString("message") ?? undefined : undefined,
+						mode === "banner" ? interaction.options.getAttachment("image", true) : undefined,
+					);
+					break;
+				}
 				case "autoreply": {
 					const mode = interaction.options.getSubcommand();
 					await autoReplyActions.manage(

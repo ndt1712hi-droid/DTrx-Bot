@@ -7,6 +7,7 @@ RUN npm ci
 
 COPY tsconfig.json index.js ./
 COPY src ./src
+COPY assets ./assets
 RUN npm run build && npm prune --omit=dev
 
 ENV NODE_ENV=production

@@ -15,6 +15,7 @@ import { SessionPersistence } from "../core/persistence.js";
 import { AlwaysOnVoiceStore } from "../core/alwaysOnStore.js";
 import { buildSlashCommands } from "../handlers/slashDefinitions.js";
 import { createBotInstance, supportsVoiceRuntime } from "../index.js";
+import { mockBackgroundMediaInitialization } from "./offlineMedia.js";
 import { waitForAudioDelivery } from "../core/playbackHealth.js";
 import { installManagedAudioResources } from "../core/managedAudioResource.js";
 import { resolveInteractionGuildAndMember } from "../handlers/interactionHandler.js";
@@ -35,9 +36,10 @@ import {
 	sanitizeFilename,
 } from "../utils/format.js";
 
-// ZiPlayer eagerly fetches Edge voices in every bot constructor. Keep unit
-// tests deterministic and offline; playback-specific network paths are mocked
-// separately in the tests that exercise them.
+// ZiPlayer eagerly initializes its music providers and Edge voices. Keep unit
+// tests deterministic and offline; playback-specific paths are mocked separately.
+const restoreMediaInitialization = mockBackgroundMediaInitialization();
+test.after(restoreMediaInitialization);
 const nativeFetch = globalThis.fetch;
 globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
 	const url = input instanceof Request ? input.url : String(input);
@@ -151,9 +153,9 @@ test("Vietnamese and English voice command parser enforces wake words", () => {
 	assert.deepEqual(parseVoiceCommand("bot lặp bài", ["zi", "bot"]), { type: "loop", mode: "track" });
 });
 
-test("Slash command definitions build all 28 commands cleanly", () => {
+test("Slash command definitions build all 30 commands cleanly", () => {
 	const commands = buildSlashCommands();
-	assert.equal(commands.length, 28);
+	assert.equal(commands.length, 30);
 	const names = new Set(commands.map((c) => c.name));
 	for (const expected of [
 		"play",
@@ -161,6 +163,8 @@ test("Slash command definitions build all 28 commands cleanly", () => {
 		"tts",
 		"247",
 		"autoreply",
+		"welcome",
+		"goodbye",
 		"pause",
 		"resume",
 		"skip",
@@ -192,6 +196,13 @@ test("Slash command definitions build all 28 commands cleanly", () => {
 	const autoReply = commands.find((command) => command.name === "autoreply");
 	assert.deepEqual(autoReply?.options?.map((option) => option.name), ["set", "remove", "list"]);
 	assert.equal(autoReply?.default_member_permissions, "32", "Only members with Manage Server can configure auto-replies by default");
+	for (const name of ["welcome", "goodbye"]) {
+		const command = commands.find((entry) => entry.name === name);
+		assert.deepEqual(command?.options?.map((option) => option.name), ["set", "off", "status", "test", "banner", "reset-banner"]);
+		const upload = command?.options?.find((option) => option.name === "banner") as { options?: { name: string; required?: boolean }[] } | undefined;
+		assert.deepEqual(upload?.options?.map((option) => [option.name, option.required]), [["image", true]]);
+		assert.equal(command?.default_member_permissions, "32", "Greeting configuration requires Manage Server by default");
+	}
 });
 
 test("ZiMusicBotEngine initializes all 5 plugins, isolates per-guild extensions, and builds rich embeds", async () => {
@@ -269,6 +280,8 @@ test("ZiMusicBotEngine initializes all 5 plugins, isolates per-guild extensions,
 
 		const helpEmbed = buildHelpEmbed("!");
 		assert.ok((helpEmbed.data.fields?.length ?? 0) >= 4);
+		assert.ok(helpEmbed.data.fields?.some((field) => field.value.includes("/welcome set")));
+		assert.ok(helpEmbed.data.fields?.every((field) => field.value.length <= 1024), "Help fields fit Discord's limit");
 
 		// Persistence snapshot & reload
 		const persistence = new SessionPersistence(persistPath, true);
@@ -525,6 +538,7 @@ test("TTS isolation preserves the YouTube plugin's mobile URL handling", async (
 	try {
 		const youtube = engine.manager.getPlugins().find((p) => p.name === "youtube") as any;
 		assert.ok(youtube);
+		await youtube.ready;
 		youtube.ready = Promise.resolve();
 		let requestedId = "";
 		youtube.client = {

@@ -1,33 +1,41 @@
 import path from "node:path";
 import { generateDependencyReport } from "@discordjs/voice";
-import { ActivityType, Client, Events, GatewayIntentBits, Options } from "discord.js";
+import { ActivityType, Client, Events, GatewayIntentBits, Options, Partials } from "discord.js";
 import { assertBotCredentials, ensureFfmpegInstalled, loadConfig } from "./config.js";
 import { ZiMusicBotEngine } from "./core/musicEngine.js";
 import { AutoReplyStore } from "./core/autoReplyStore.js";
+import { MemberGreetingStore } from "./core/memberGreetingStore.js";
+import { MemberBannerStore } from "./core/memberBannerStore.js";
 import { deploySlashCommands } from "./deploy-commands.js";
 import { registerInteractionHandler } from "./handlers/interactionHandler.js";
 import { AutoReplyActions, registerAutoReplyHandler } from "./handlers/autoReplyHandler.js";
 import { MusicCommandActions } from "./handlers/musicActions.js";
+import { MemberGreetingActions, MemberGreetingService } from "./handlers/memberGreetingHandler.js";
 import { registerPrefixHandler } from "./handlers/prefixHandler.js";
 
 export interface CreateBotOptions {
 	includeMessageContentIntent?: boolean;
+	includeGuildMembersIntent?: boolean;
 }
 
 export function createBotInstance(customEnv?: NodeJS.ProcessEnv, options: CreateBotOptions = {}) {
 	const config = loadConfig(customEnv);
 	const includeMessageContent = options.includeMessageContentIntent ?? true;
+	const includeGuildMembers = options.includeGuildMembersIntent ?? true;
 
 	const intents = [
 		GatewayIntentBits.Guilds,
 		GatewayIntentBits.GuildVoiceStates,
 		GatewayIntentBits.GuildMessages,
 		...(includeMessageContent ? [GatewayIntentBits.MessageContent] : []),
+		...(includeGuildMembers ? [GatewayIntentBits.GuildMembers] : []),
 	];
 
 	// Memory-optimized Discord.js cache profile so the bot runs smoothly on free-tier hosts (e.g. botkeep.cloud)
 	const client = new Client({
 		intents,
+		// Goodbye must also fire when a departing member is outside the 200-member cache.
+		partials: [Partials.GuildMember],
 		makeCache: Options.cacheWithLimits({
 			...Options.DefaultMakeCacheSettings,
 			MessageManager: 20,
@@ -64,10 +72,21 @@ export function createBotInstance(customEnv?: NodeJS.ProcessEnv, options: Create
 		replyPath === path.resolve(config.persistenceFile) ? `${replyPath}.rules.json` : replyPath,
 	);
 	const autoReplyActions = new AutoReplyActions(autoReplyStore, includeMessageContent);
+	const greetingPath = path.resolve(path.dirname(config.persistenceFile), "member-greetings.json");
+	const greetingStore = new MemberGreetingStore(
+		greetingPath === path.resolve(config.persistenceFile) ? `${greetingPath}.settings.json` : greetingPath,
+	);
+	const bannerDirectory = path.resolve(path.dirname(config.persistenceFile), "member-banners");
+	const bannerStore = new MemberBannerStore(
+		bannerDirectory === path.resolve(config.persistenceFile) ? `${bannerDirectory}.images` : bannerDirectory,
+	);
+	const greetingService = new MemberGreetingService(client, greetingStore, includeGuildMembers, undefined, bannerStore);
+	const greetingActions = new MemberGreetingActions(greetingStore, greetingService, includeGuildMembers);
 
-	registerInteractionHandler(engine, actions, autoReplyActions);
+	registerInteractionHandler(engine, actions, autoReplyActions, greetingActions);
 	registerPrefixHandler(engine, actions);
 	registerAutoReplyHandler(client, autoReplyStore, includeMessageContent);
+	greetingService.register();
 
 	client.once(Events.ClientReady, async (readyClient) => {
 		const guildCount = readyClient.guilds.cache.size;
@@ -96,6 +115,12 @@ export function createBotInstance(customEnv?: NodeJS.ProcessEnv, options: Create
 		});
 		if (!includeMessageContent) {
 			console.warn("[AutoReply] Đang tắt: hãy bật Message Content Intent trong Discord Developer Portal rồi khởi động lại.");
+		}
+		void greetingStore.ready().catch((err: unknown) => {
+			console.error("[Greeting] Không thể tải cấu hình:", err instanceof Error ? err.message : err);
+		});
+		if (!includeGuildMembers) {
+			console.warn("[Greeting] Welcome/goodbye chưa nhận sự kiện: bật Server Members Intent trong Discord Developer Portal rồi khởi động lại.");
 		}
 
 		readyClient.user.setPresence({
@@ -133,12 +158,47 @@ export function createBotInstance(customEnv?: NodeJS.ProcessEnv, options: Create
 		}
 	});
 
-	return { client, config, engine, actions, autoReplyStore, autoReplyActions };
+	return { client, config, engine, actions, autoReplyStore, autoReplyActions, greetingStore, bannerStore, greetingService, greetingActions };
+}
+
+/** Clean up an instance that failed before login without erasing saved music. */
+export async function disposeFailedLogin(bot: ReturnType<typeof createBotInstance>): Promise<void> {
+	bot.greetingService.close();
+	await bot.engine.shutdown({ saveSessions: false }).catch(() => undefined);
+	await bot.client.destroy().catch(() => undefined);
 }
 
 function isDisallowedIntentsError(err: unknown): boolean {
 	const msg = err instanceof Error ? err.message : String(err);
 	return /disallowed intents/i.test(msg);
+}
+
+/** Discord's 4014 error does not identify which privileged intent is missing.
+ * Try all combinations, preserving Message Content first so adding welcome
+ * cannot accidentally disable an already-working auto-reply bot. */
+export async function loginWithIntentFallback<T>(
+	create: (options: Required<CreateBotOptions>) => T,
+	login: (instance: T) => Promise<unknown>,
+	dispose: (instance: T) => Promise<void>,
+): Promise<T> {
+	const attempts: Required<CreateBotOptions>[] = [
+		{ includeMessageContentIntent: true, includeGuildMembersIntent: true },
+		{ includeMessageContentIntent: true, includeGuildMembersIntent: false },
+		{ includeMessageContentIntent: false, includeGuildMembersIntent: true },
+		{ includeMessageContentIntent: false, includeGuildMembersIntent: false },
+	];
+	for (let index = 0; index < attempts.length; index++) {
+		const bot = create(attempts[index]);
+		try {
+			await login(bot);
+			return bot;
+		} catch (err) {
+			await dispose(bot).catch(() => undefined);
+			if (!isDisallowedIntentsError(err) || index === attempts.length - 1) throw err;
+			console.warn("[Gateway] Một hoặc nhiều privileged intent chưa được cấp; thử cấu hình tương thích để bot vẫn hoạt động.");
+		}
+	}
+	throw new Error("Không còn cấu hình Gateway để thử");
 }
 
 export function supportsVoiceRuntime(version = process.versions.node): boolean {
@@ -160,7 +220,8 @@ async function main() {
 	const precheckConfig = loadConfig();
 	assertBotCredentials(precheckConfig);
 
-	let active = createBotInstance(undefined, { includeMessageContentIntent: true });
+	let active: ReturnType<typeof createBotInstance> | undefined;
+	let activeLoggedIn = false;
 
 	let shuttingDown = false;
 	const gracefulExit = async (signal: string) => {
@@ -168,11 +229,21 @@ async function main() {
 		shuttingDown = true;
 		console.log(`\n🛑 Nhận tín hiệu ${signal}, đang lưu phiên phát nhạc và đóng kết nối...`);
 		try {
-			await active.autoReplyStore.flush().catch((err: unknown) => {
-				console.error("[AutoReply] Không thể hoàn tất lưu cấu hình:", err instanceof Error ? err.message : err);
-			});
-			await active.engine.shutdown();
-			await active.client.destroy();
+			const bot = active;
+			if (bot) {
+				bot.greetingService.close();
+				await bot.autoReplyStore.flush().catch((err: unknown) => {
+					console.error("[AutoReply] Không thể hoàn tất lưu cấu hình:", err instanceof Error ? err.message : err);
+				});
+				await bot.greetingStore.flush().catch((err: unknown) => {
+					console.error("[Greeting] Không thể hoàn tất lưu cấu hình:", err instanceof Error ? err.message : err);
+				});
+				await bot.bannerStore.flush().catch((err: unknown) => {
+					console.error("[Greeting] Không thể hoàn tất lưu ảnh nền:", err instanceof Error ? err.message : err);
+				});
+				await bot.engine.shutdown({ saveSessions: activeLoggedIn });
+				await bot.client.destroy();
+			}
 		} catch (err) {
 			console.error("Lỗi khi tắt bot:", err);
 		} finally {
@@ -191,29 +262,18 @@ async function main() {
 		console.error("[UncaughtException]", error);
 	});
 
-	try {
-		await active.client.login(active.config.discordToken);
-	} catch (err) {
-		await active.engine.shutdown().catch(() => undefined);
-		await active.client.destroy().catch(() => undefined);
-
-		if (isDisallowedIntentsError(err)) {
-			console.warn(
-				"⚠️ Phát hiện Bot chưa bật 'Message Content Intent' trên Discord Developer Portal -> Tự động chuyển sang chế độ Slash Commands (/play) & @Mention để Bot chạy ngay không bị crash!",
-			);
-			active = createBotInstance(undefined, { includeMessageContentIntent: false });
-			try {
-				await active.client.login(active.config.discordToken);
-				return;
-			} catch (retryErr) {
-				await active.engine.shutdown().catch(() => undefined);
-				await active.client.destroy().catch(() => undefined);
-				throw retryErr;
-			}
-		}
-
-		throw err;
-	}
+	await loginWithIntentFallback(
+		(options) => { activeLoggedIn = false; active = createBotInstance(undefined, options); return active; },
+		async (bot) => {
+			const result = await bot.client.login(bot.config.discordToken);
+			activeLoggedIn = true;
+			return result;
+		},
+		async (bot) => {
+			if (active === bot) active = undefined;
+			await disposeFailedLogin(bot);
+		},
+	);
 }
 
 const isDirectRun =

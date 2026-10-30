@@ -79,5 +79,7 @@ export declare class ZiMusicBotEngine {
      * Restores active sessions saved prior to a bot restart if human listeners are still in the voice channel.
      */
     restorePersistedSessions(): Promise<number>;
-    shutdown(): Promise<void>;
+    shutdown(options?: {
+        saveSessions?: boolean;
+    }): Promise<void>;
 }
