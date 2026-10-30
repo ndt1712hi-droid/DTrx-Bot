@@ -423,6 +423,7 @@ export function buildHelpEmbed(prefix: string) {
 					`\`/welcome set\`, \`/goodbye set\` — Chào/tạm biệt kèm banner; dùng \`test\`, \`status\` hoặc \`off\` để quản lý`,
 					`\`/welcome banner\`, \`/goodbye banner\` — Tải ảnh nền riêng; \`reset-banner\` để về mặc định`,
 					`\`/lock [channel]\`, \`/unlock [channel]\` — Khóa hoặc khôi phục quyền nhắn tin của kênh`,
+					`\`/spam set|on|off|delete|clear|status\` — Nhắc người đã đồng ý; có giới hạn và nút dừng`,
 				].join("\n"),
 			},
 			{

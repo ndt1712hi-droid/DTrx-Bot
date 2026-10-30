@@ -3,6 +3,7 @@ import type { ZiMusicBotEngine } from "../core/musicEngine.js";
 import type { AutoReplyActions } from "./autoReplyHandler.js";
 import type { MemberGreetingActions } from "./memberGreetingHandler.js";
 import type { ChannelLockActions } from "./channelLockHandler.js";
+import { type MentionReminderService } from "./mentionReminderHandler.js";
 import { MusicCommandActions } from "./musicActions.js";
 export type ResolvedGuildContext = {
     ok: true;
@@ -24,4 +25,4 @@ export type ResolvedGuildContext = {
  *    is `null` because the Bot user is not in the server.
  */
 export declare function resolveInteractionGuildAndMember(interaction: ChatInputCommandInteraction | ButtonInteraction | StringSelectMenuInteraction): Promise<ResolvedGuildContext>;
-export declare function registerInteractionHandler(engine: ZiMusicBotEngine, actions: MusicCommandActions, autoReplyActions: AutoReplyActions, greetingActions?: MemberGreetingActions, channelLockActions?: ChannelLockActions): void;
+export declare function registerInteractionHandler(engine: ZiMusicBotEngine, actions: MusicCommandActions, autoReplyActions: AutoReplyActions, greetingActions?: MemberGreetingActions, channelLockActions?: ChannelLockActions, mentionReminder?: MentionReminderService): void;

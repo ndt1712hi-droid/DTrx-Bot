@@ -29,10 +29,10 @@ export async function deploySlashCommands(config: BotConfig, loggedInClientId?: 
 
 	if (config.guildId) {
 		await rest.put(Routes.applicationGuildCommands(appId, config.guildId), { body });
-		console.log(`✅ Đã đăng ký ${body.length} Slash Commands cho Guild ${config.guildId}, gồm /welcome, /goodbye, /lock và /unlock.`);
+		console.log(`✅ Đã đăng ký ${body.length} Slash Commands cho Guild ${config.guildId}, gồm /welcome, /goodbye, /lock, /unlock và /spam.`);
 	} else {
 		await rest.put(Routes.applicationCommands(appId), { body });
-		console.log(`✅ Đã đăng ký ${body.length} Slash Commands toàn cục (Global), gồm /welcome, /goodbye, /lock và /unlock.`);
+		console.log(`✅ Đã đăng ký ${body.length} Slash Commands toàn cục (Global), gồm /welcome, /goodbye, /lock, /unlock và /spam.`);
 	}
 
 	return body.length;

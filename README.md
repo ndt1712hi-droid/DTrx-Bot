@@ -25,11 +25,12 @@ Bot nghe nhạc Discord đa năng, hiệu năng cao được xây dựng hoàn c
   - **AI Autoplay (`AiAutoplayExtension`)** — Gợi ý nhạc theo gu bằng Gemini khi cấu hình `GEMINI_API_KEY`.
   - **Lavalink (`lavalinkExt`)** — Hỗ trợ kết nối Lavalink Nodes ngoài khi cấu hình `LAVALINK_NODES`.
 - 🎮 **3 phương thức điều khiển song song**:
-  - **32 Slash Commands (`/play`, `/filter`...)** có **Autocomplete tìm kiếm bài hát & bộ lọc trực tiếp**.
+  - **33 Slash Commands (`/play`, `/filter`...)** có **Autocomplete tìm kiếm bài hát & bộ lọc trực tiếp**.
   - **Prefix Commands (`!play`, `!skip`, `!np`...)** nhanh gọn.
   - **Bảng điều khiển Nút bấm & Menu chọn Filter (Interactive Controller)** tự động cập nhật trạng thái và bảo vệ quyền điều khiển theo kênh thoại.
 - 👋 **Welcome / Goodbye:** Chọn kênh và nội dung riêng cho từng server; banner cá nhân hóa tên, avatar, tên server và số thành viên; tự tải nền riêng qua Discord.
 - 🔒 **Khóa kênh chữ:** `/lock` chặn nhắn tin và chủ đề của @everyone; `/unlock` khôi phục các quyền trước đó.
+- 🔔 **Nhắc tag có giới hạn:** `/spam` chọn một người, xin đồng ý trước, và có lệnh dừng, xóa cấu hình hoặc dọn tin bot.
 - 💾 **Tự động lưu & khôi phục phiên phát (`SessionPersistence`)**: Lưu hàng đợi định kỳ và khi tắt bot, tự động vào lại phòng phát tiếp khi bot khởi động lại.
 - 📥 **Xuất file MP3 trực tiếp (`/save`)**: Chuyển đổi bài đang phát (kèm hiệu ứng FFmpeg tùy chọn) thành file `.mp3` gửi thẳng vào kênh chat.
 - 📡 **Multi-Server Forward Mirror (`/mirror`)**: Đồng bộ luồng phát âm thanh trực tiếp từ một Server chính sang các Server phụ với mức tốn CPU cực thấp.
@@ -55,7 +56,7 @@ Sao chép file `.env.example` thành `.env` và điền Token của bạn:
 cp .env.example .env
 ```
 
-Tối thiểu bạn chỉ cần điền `DISCORD_TOKEN` trong `.env` (Bot sẽ tự nhận diện `CLIENT_ID` và đăng ký toàn bộ 32 Slash Commands khi khởi động nếu `AUTO_DEPLOY_COMMANDS=true`):
+Tối thiểu bạn chỉ cần điền `DISCORD_TOKEN` trong `.env` (Bot sẽ tự nhận diện `CLIENT_ID` và đăng ký toàn bộ 33 Slash Commands khi khởi động nếu `AUTO_DEPLOY_COMMANDS=true`):
 
 ```env
 DISCORD_TOKEN=your_discord_bot_token_here
@@ -103,6 +104,7 @@ docker run -d --name ziplayer-bot --env-file .env -v "$(pwd)/data:/app/data" --r
 | `/goodbye set`, `/goodbye test`, `/goodbye status`, `/goodbye off` | — | Cài đặt và thử thông báo tạm biệt kèm banner |
 | `/goodbye banner`, `/goodbye reset-banner` | — | Tải ảnh nền goodbye hoặc khôi phục nền mặc định |
 | `/lock [channel]`, `/unlock [channel]` | — | Khóa kênh chữ cho @everyone hoặc khôi phục quyền trước khi khóa |
+| `/spam set`, `/spam on`, `/spam off`, `/spam delete`, `/spam clear`, `/spam status` | — | Nhắc một người đã đồng ý; dừng, xóa cấu hình hoặc dọn tin bot |
 | `/pause` / `/resume` | `!pause` / `!resume` | Tạm dừng / Tiếp tục phát nhạc |
 | `/skip [to]` | `!skip [vị trí]`, `!s` | Bỏ qua bài hiện tại hoặc nhảy thẳng tới bài thứ `N` |
 | `/previous` | `!prev`, `!back` | Quay lại phát bài trước đó trong lịch sử |
@@ -152,7 +154,7 @@ docker run -d --name ziplayer-bot --env-file .env -v "$(pwd)/data:/app/data" --r
 - Bot cần quyền **View Channel**, **Send Messages** và **Attach Files** trong kênh. Banner JPG dùng nền mặc định và font tiếng Việt trong `assets/`, hoặc nền do quản trị viên tải lên, cùng tên/avatar thực của thành viên, tên server và số thành viên; khi avatar không tải được sẽ dùng hình mặc định. Nếu không tạo/gửi được ảnh hoặc hàng đợi ảnh quá tải, bot cố gửi lời chào dạng chữ và ghi log `[Greeting]`. Bot tải thư viện ảnh khi cần và chỉ xử lý một banner mỗi lần.
 - Welcome/goodbye ban đầu **tắt** và được lưu riêng theo server trong `data/member-greetings.json`, cùng thư mục với `PERSISTENCE_FILE`. Nếu `PERSISTENCE_FILE` trùng tên này, bot dùng `member-greetings.json.settings.json` để tránh ghi đè. Ảnh nền tự tải được tối ưu và lưu riêng trong `data/member-banners/`; nếu đường dẫn đó trùng `PERSISTENCE_FILE`, dùng `member-banners.images/`. Giữ thư mục dữ liệu qua restart/redeploy. Nếu bot offline, các sự kiện xảy ra lúc đó không được phát lại; goodbye cũng áp dụng cho thành viên bị kick/ban.
 - Nếu chưa bật Server Members Intent, bot thử khởi động ở chế độ tương thích để nhạc tiếp tục hoạt động, nhưng không tự nhận sự kiện vào/rời; `status`/`set` sẽ nhắc bật intent. `/test` vẫn có thể gửi thử sau khi cấu hình. Nếu vẫn lỗi, kiểm tra log `[Gateway]`/`[Greeting]` và quyền kênh.
-- Nếu không thấy `/welcome` hoặc `/goodbye`, dùng tài khoản có quyền **Manage Server** trong server đã thêm bot. Xem Console sau khi khởi động: `[Runtime] DTrx-Bot 1.2.0` cho biết mã phiên bản mới đang chạy; dòng `Đã đăng ký 32 Slash Commands ... gồm /welcome, /goodbye, /lock và /unlock` cho biết đăng ký thành công. Kiểm tra `AUTO_DEPLOY_COMMANDS=true`; nếu có `DISCORD_GUILD_ID`, lệnh chỉ đăng ký cho server có ID đó, còn lệnh global có thể cần thời gian cập nhật. Tìm lỗi `Không thể tự động đăng ký Slash Commands` nếu không thấy dòng thành công.
+- Nếu không thấy `/welcome` hoặc `/goodbye`, dùng tài khoản có quyền **Manage Server** trong server đã thêm bot. Xem Console sau khi khởi động: `[Runtime] DTrx-Bot 1.3.0` cho biết mã phiên bản mới đang chạy; dòng `Đã đăng ký 33 Slash Commands ... gồm /welcome, /goodbye, /lock, /unlock và /spam` cho biết đăng ký thành công. Kiểm tra `AUTO_DEPLOY_COMMANDS=true`; nếu có `DISCORD_GUILD_ID`, lệnh chỉ đăng ký cho server có ID đó, còn lệnh global có thể cần thời gian cập nhật. Tìm lỗi `Không thể tự động đăng ký Slash Commands` nếu không thấy dòng thành công.
 
 ### Khóa và mở khóa kênh chữ
 
@@ -164,6 +166,17 @@ docker run -d --name ziplayer-bot --env-file .env -v "$(pwd)/data:/app/data" --r
 **Giới hạn Discord:** Khóa `@everyone` không bảo đảm mọi người đều bị chặn: quản trị viên và các vai trò/thành viên có quyền cho phép riêng trong kênh có thể vượt qua ghi đè `@everyone`. Bot chỉ khóa khi được gọi lệnh; không tự khóa kênh welcome. Việc thay đổi quyền có thể làm kênh tạm mất đồng bộ quyền với danh mục; sau mở, bot khôi phục các ghi đè do nó sửa nhưng không ép đồng bộ lại nếu người quản lý đã thay đổi quyền khác.
 
 Bản quyền cũ được ghi **trước** khi bot sửa Discord vào `data/channel-locks.json` cạnh `PERSISTENCE_FILE`; nếu trùng tên file phiên nhạc thì dùng `channel-locks.json.locks.json`. Giữ thư mục `data/` khi cập nhật. Nếu khóa hoặc mở thất bại giữa chừng, bản lưu vẫn giữ; sửa quyền/kết nối rồi thử `/unlock` lại. Nếu mất hoặc hỏng bản lưu, `/unlock` từ chối thay đổi để tránh mở nhầm; khôi phục file từ bản sao lưu hoặc nhờ quản trị viên sửa thủ công. Không chạy nhiều bản bot cùng token/dữ liệu song song.
+
+### Nhắc tag một người có đồng ý
+
+1. Người có quyền **Manage Server (Quản lý máy chủ)** chạy `/spam set`, chọn `user` (thành viên thật trong server). Có thể chọn `channel` là kênh chữ/kênh thông báo; nếu bỏ trống, bot dùng kênh hiện tại. Cả người dùng lệnh và người nhận phải xem được kênh; bot cần **View Channel** và **Send Messages**.
+2. Tùy chọn `interval` là số giây giữa các tag (**10–3600**, mặc định **30**), `count` là số lần mỗi đợt (**1–10**, mặc định **10**) và `message` là nội dung tối đa **200 ký tự**. Ví dụ: `/spam set user:@Bạn channel:#chat interval:30 count:5 message:Nhắc bạn nhé`. Nội dung thêm không ping `@everyone`, role hay người khác.
+3. Dùng `/spam on`. Bot gửi một yêu cầu **không ping** trong kênh đã chọn. Chỉ đúng người nhận có thể bấm **Đồng ý** hoặc **Từ chối**; yêu cầu hết hạn sau 2 phút. Khi người đó đồng ý, bot mới bắt đầu tag, tối đa theo `count`. Mỗi tin có nút **Dừng tag** cho người nhận; người bắt đầu và người có Manage Server cũng có thể dừng. Muốn chạy đợt mới phải xin đồng ý lại.
+4. `/spam off` dừng đợt hoặc hủy yêu cầu chờ và **giữ cấu hình**. `/spam delete` dừng rồi **xóa cấu hình**, không tự xóa tin cũ. `/spam clear` dừng rồi dọn các yêu cầu và tin nhắc đã được chức năng này ghi nhận; bot xác minh từng tin là của chính bot trước khi xóa, không xóa tin người khác. Người dọn phải xem được kênh; bot cần **Read Message History** và **View Channel** để dọn. Tin không thể dọn được giữ lại trong danh sách để thử sau. `/spam status` xem tình trạng.
+
+Mặc định tính năng này rất nhẹ: chỉ dùng hẹn giờ khi có yêu cầu/đợt đang chạy, không tạo luồng riêng; mỗi đợt tối đa 10 tag và toàn bot tối đa 4 server đang chờ hoặc chạy. Khoảng cách tối thiểu 10 giây vẫn được áp dụng nếu bật lại ngay. Đây là giới hạn thiết kế, **không phải số RAM/CPU đã đo trên Botkeep**; Discord vẫn có giới hạn tốc độ riêng. Hãy chỉ dùng khi người nhận thực sự đồng ý.
+
+Cấu hình và tối đa 100 ID tin bot mỗi server được lưu tại `data/mention-reminders.json` cạnh `PERSISTENCE_FILE`; nếu trùng tên file phiên nhạc thì dùng `mention-reminders.json.reminders.json`. Giữ thư mục `data/` qua redeploy. Nếu danh sách đầy, cần chạy `/spam clear` trước khi mở đợt mới. Bot **không tự tiếp tục** đợt đã chạy hoặc yêu cầu chờ sau khi restart; cấu hình vẫn còn nếu host giữ dữ liệu, nhưng cần `/spam on` và người nhận đồng ý lại. Không chạy nhiều bản bot dùng chung dữ liệu.
 
 ### Treo bot trong phòng thoại 24/7
 
@@ -183,7 +196,7 @@ Cấu hình phòng được lưu tại `data/voice-24-7.json` (cùng thư mục 
 ├── src/
 │   ├── index.ts                     # Điểm khởi chạy chính & quản lý vòng đời tiến trình
 │   ├── config.ts                    # Đọc cấu hình .env & tự động ánh xạ FFmpeg binary
-│   ├── deploy-commands.ts           # Đăng ký 32 Slash Commands lên Discord API
+│   ├── deploy-commands.ts           # Đăng ký 33 Slash Commands lên Discord API
 │   ├── core/
 │   │   ├── musicEngine.ts           # Quản lý ZiPlayer, Plugins, Extensions & Discord Events
 │   │   ├── persistence.ts           # Tự động lưu & khôi phục phiên nhạc qua JSON nguyên tử
@@ -193,13 +206,15 @@ Cấu hình phòng được lưu tại `data/voice-24-7.json` (cùng thư mục 
 │   │   ├── memberBanner.ts          # Tạo banner JPG và xử lý ảnh tải lên có giới hạn
 │   │   ├── memberBannerStore.ts     # Lưu ảnh nền riêng của từng server
 │   │   ├── channelLockStore.ts      # Lưu bản quyền cũ để mở khóa an toàn
+│   │   ├── mentionReminderStore.ts  # Lưu cấu hình và các tin nhắc do bot gửi
 │   │   └── exporter.ts              # Xuất luồng nhạc ZiPlayer sang MP3 qua FFmpeg
 │   ├── handlers/
-│   │   ├── slashDefinitions.ts      # Định nghĩa cấu trúc 32 Slash Commands
+│   │   ├── slashDefinitions.ts      # Định nghĩa cấu trúc 33 Slash Commands
 │   │   ├── musicActions.ts          # Xử lý nghiệp vụ thống nhất & kiểm tra quyền kênh thoại
 │   │   ├── autoReplyHandler.ts      # Trả lời tự động và quản lý bằng slash command
 │   │   ├── memberGreetingHandler.ts # Sự kiện vào/rời, hàng đợi banner & lệnh quản trị
 │   │   ├── channelLockHandler.ts    # Khóa/mở kênh chữ và phục hồi quyền
+│   │   ├── mentionReminderHandler.ts # Xin đồng ý, gửi có giới hạn, dừng và dọn tin
 │   │   ├── interactionHandler.ts    # Xử lý Slash, Autocomplete, Nút bấm & Select Menu
 │   │   └── prefixHandler.ts         # Xử lý lệnh Prefix văn bản (!play, !skip...)
 │   ├── ui/

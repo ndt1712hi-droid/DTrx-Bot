@@ -701,3 +701,21 @@ test("channel lock journal cannot overwrite a same-named music persistence file"
 		await fs.rm(directory, { recursive: true, force: true });
 	}
 });
+
+test("mention reminder data cannot overwrite a same-named music persistence file", async () => {
+	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "dtrx-mention-collision-"));
+	const sessionFile = path.join(directory, "mention-reminders.json");
+	await fs.writeFile(sessionFile, "[]");
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = (async () => new Response("[]", { headers: { "content-type": "application/json" } })) as typeof fetch;
+	const bot = createBotInstance({ DISCORD_TOKEN: "dummy", ENABLE_PERSISTENCE: "false", PERSISTENCE_FILE: sessionFile });
+	try {
+		await bot.mentionReminderStore.setConfig({ guildId: "g", channelId: "c", targetId: "u", intervalSeconds: 30, count: 10, text: "Reminder" });
+		assert.equal(await fs.readFile(sessionFile, "utf8"), "[]");
+		assert.equal(JSON.parse(await fs.readFile(`${sessionFile}.reminders.json`, "utf8"))[0].config.targetId, "u");
+	} finally {
+		await disposeFailedLogin(bot);
+		globalThis.fetch = originalFetch;
+		await fs.rm(directory, { recursive: true, force: true });
+	}
+});

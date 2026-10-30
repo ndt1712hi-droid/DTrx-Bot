@@ -9,6 +9,8 @@ import { MemberGreetingStore } from "./core/memberGreetingStore.js";
 import { MemberBannerStore } from "./core/memberBannerStore.js";
 import { ChannelLockStore } from "./core/channelLockStore.js";
 import { ChannelLockActions } from "./handlers/channelLockHandler.js";
+import { MentionReminderStore } from "./core/mentionReminderStore.js";
+import { MentionReminderService } from "./handlers/mentionReminderHandler.js";
 import { deploySlashCommands } from "./deploy-commands.js";
 import { registerInteractionHandler } from "./handlers/interactionHandler.js";
 import { AutoReplyActions, registerAutoReplyHandler } from "./handlers/autoReplyHandler.js";
@@ -90,8 +92,13 @@ export function createBotInstance(customEnv?: NodeJS.ProcessEnv, options: Create
 		lockPath === path.resolve(config.persistenceFile) ? `${lockPath}.locks.json` : lockPath,
 	);
 	const channelLockActions = new ChannelLockActions(channelLockStore);
+	const mentionPath = path.resolve(path.dirname(config.persistenceFile), "mention-reminders.json");
+	const mentionReminderStore = new MentionReminderStore(
+		mentionPath === path.resolve(config.persistenceFile) ? `${mentionPath}.reminders.json` : mentionPath,
+	);
+	const mentionReminder = new MentionReminderService(client, mentionReminderStore);
 
-	registerInteractionHandler(engine, actions, autoReplyActions, greetingActions, channelLockActions);
+	registerInteractionHandler(engine, actions, autoReplyActions, greetingActions, channelLockActions, mentionReminder);
 	registerPrefixHandler(engine, actions);
 	registerAutoReplyHandler(client, autoReplyStore, includeMessageContent);
 	greetingService.register();
@@ -129,6 +136,9 @@ export function createBotInstance(customEnv?: NodeJS.ProcessEnv, options: Create
 		});
 		void channelLockStore.ready().catch((err: unknown) => {
 			console.error("[ChannelLock] Không thể tải bản khôi phục quyền:", err instanceof Error ? err.message : err);
+		});
+		void mentionReminderStore.ready().catch((err: unknown) => {
+			console.error("[MentionReminder] Không thể tải cấu hình:", err instanceof Error ? err.message : err);
 		});
 		if (!includeGuildMembers) {
 			console.warn("[Greeting] Welcome/goodbye chưa nhận sự kiện: bật Server Members Intent trong Discord Developer Portal rồi khởi động lại.");
@@ -171,12 +181,13 @@ export function createBotInstance(customEnv?: NodeJS.ProcessEnv, options: Create
 		}
 	});
 
-	return { client, config, engine, actions, autoReplyStore, autoReplyActions, greetingStore, bannerStore, greetingService, greetingActions, channelLockStore, channelLockActions };
+	return { client, config, engine, actions, autoReplyStore, autoReplyActions, greetingStore, bannerStore, greetingService, greetingActions, channelLockStore, channelLockActions, mentionReminderStore, mentionReminder };
 }
 
 /** Clean up an instance that failed before login without erasing saved music. */
 export async function disposeFailedLogin(bot: ReturnType<typeof createBotInstance>): Promise<void> {
 	bot.greetingService.close();
+	await bot.mentionReminder.close().catch(() => undefined);
 	await bot.channelLockActions.close().catch(() => undefined);
 	await bot.engine.shutdown({ saveSessions: false }).catch(() => undefined);
 	await bot.client.destroy().catch(() => undefined);
@@ -249,6 +260,9 @@ async function main() {
 			const bot = active;
 			if (bot) {
 				bot.greetingService.close();
+				await bot.mentionReminder.close().catch((err: unknown) => {
+					console.error("[MentionReminder] Không thể hoàn tất lưu dữ liệu:", err instanceof Error ? err.message : err);
+				});
 				await bot.channelLockActions.close().catch((err: unknown) => {
 					console.error("[ChannelLock] Không thể hoàn tất lưu dữ liệu:", err instanceof Error ? err.message : err);
 				});

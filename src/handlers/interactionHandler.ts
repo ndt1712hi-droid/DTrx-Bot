@@ -15,6 +15,7 @@ import type { PlayerUserData } from "../types/bot.js";
 import type { AutoReplyActions } from "./autoReplyHandler.js";
 import type { MemberGreetingActions } from "./memberGreetingHandler.js";
 import type { ChannelLockActions } from "./channelLockHandler.js";
+import { isMentionReminderButton, type MentionReminderService } from "./mentionReminderHandler.js";
 import {
 	buildFullLyricsEmbed,
 	buildNowPlayingPayload,
@@ -353,12 +354,19 @@ export function registerInteractionHandler(
 	autoReplyActions: AutoReplyActions,
 	greetingActions?: MemberGreetingActions,
 	channelLockActions?: ChannelLockActions,
+	mentionReminder?: MentionReminderService,
 ): void {
 	const autocompleteValues = new AutocompleteValueStore();
 	engine.client.on("interactionCreate", async (interaction: Interaction) => {
 		try {
 			if (interaction.isAutocomplete()) {
 				await handleAutocomplete(engine, interaction, autocompleteValues);
+				return;
+			}
+
+			if (interaction.isButton() && isMentionReminderButton(interaction.customId)) {
+				if (mentionReminder) await mentionReminder.handleButton(interaction);
+				else await interaction.reply({ content: "ℹ️ Nút nhắc tag không còn hiệu lực.", flags: MessageFlags.Ephemeral });
 				return;
 			}
 
@@ -376,7 +384,7 @@ export function registerInteractionHandler(
 			// than Discord's initial interaction deadline.
 			console.log(`[Slash] /${interaction.commandName} received (guild: ${interaction.guildId ?? "DM"})`);
 			if (!interaction.deferred && !interaction.replied) {
-				const privateManagement = interaction.commandName === "lock" || interaction.commandName === "unlock";
+				const privateManagement = interaction.commandName === "lock" || interaction.commandName === "unlock" || interaction.commandName === "spam";
 				await interaction.deferReply(privateManagement ? { flags: MessageFlags.Ephemeral } : undefined);
 			}
 
@@ -445,6 +453,21 @@ export function registerInteractionHandler(
 					}
 					const selected = interaction.options.getChannel("channel");
 					await channelLockActions.manage(ctx, interaction.commandName, selected?.id);
+					break;
+				}
+				case "spam": {
+					if (!mentionReminder) {
+						await ctx.reply({ content: "❌ Chức năng nhắc tag chưa sẵn sàng.", ephemeral: true });
+						break;
+					}
+					const mode = interaction.options.getSubcommand() as "set" | "on" | "off" | "delete" | "clear" | "status";
+					await mentionReminder.manage(ctx, mode, mode === "set" ? {
+						targetId: interaction.options.getUser("user", true).id,
+						channelId: interaction.options.getChannel("channel")?.id,
+						intervalSeconds: interaction.options.getInteger("interval") ?? undefined,
+						count: interaction.options.getInteger("count") ?? undefined,
+						text: interaction.options.getString("message") ?? undefined,
+					} : undefined);
 					break;
 				}
 				case "autoreply": {
@@ -553,6 +576,8 @@ export function registerInteractionHandler(
 				await replyToSlashInteraction(interaction, { content, ephemeral: true }).catch((replyErr) => {
 					console.error("[InteractionHandler] Failed to send error response:", replyErr);
 				});
+			} else if (interaction.isButton() && isMentionReminderButton(interaction.customId) && interaction.deferred && !interaction.replied) {
+				await interaction.editReply({ content }).catch(() => undefined);
 			} else if (!interaction.replied && !interaction.deferred) {
 				await interaction.reply({ content, flags: MessageFlags.Ephemeral }).catch(() => undefined);
 			}

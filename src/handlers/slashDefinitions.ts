@@ -23,6 +23,24 @@ function greetingCommand(name: "welcome" | "goodbye") {
 		.addSubcommand((cmd) => cmd.setName("reset-banner").setDescription("Trở về ảnh nền mặc định"));
 }
 
+function mentionReminderCommand() {
+	return new SlashCommandBuilder()
+		.setName("spam")
+		.setDescription("Nhắc một thành viên đã đồng ý, có giới hạn và có thể dừng")
+		.setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+		.addSubcommand((cmd) => cmd.setName("set").setDescription("Chọn người, kênh và giới hạn cho lời nhắc")
+			.addUserOption((opt) => opt.setName("user").setDescription("Người nhận cần đồng ý trước khi bot tag").setRequired(true))
+			.addChannelOption((opt) => opt.setName("channel").setDescription("Kênh chữ; bỏ trống để dùng kênh hiện tại").addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
+			.addIntegerOption((opt) => opt.setName("interval").setDescription("Khoảng cách giây: 10–3600 (mặc định 30)").setMinValue(10).setMaxValue(3600))
+			.addIntegerOption((opt) => opt.setName("count").setDescription("Số lượt mỗi đợt: 1–10 (mặc định 10)").setMinValue(1).setMaxValue(10))
+			.addStringOption((opt) => opt.setName("message").setDescription("Nội dung ngắn gửi cùng tag").setMaxLength(200)))
+		.addSubcommand((cmd) => cmd.setName("on").setDescription("Gửi yêu cầu đồng ý trước khi bắt đầu"))
+		.addSubcommand((cmd) => cmd.setName("off").setDescription("Dừng đợt tag, giữ cấu hình"))
+		.addSubcommand((cmd) => cmd.setName("delete").setDescription("Dừng và xóa cấu hình tag"))
+		.addSubcommand((cmd) => cmd.setName("clear").setDescription("Dừng và dọn các tin do chức năng này gửi"))
+		.addSubcommand((cmd) => cmd.setName("status").setDescription("Xem cấu hình và trạng thái tag"));
+}
+
 function channelLockCommand(name: "lock" | "unlock") {
 	return new SlashCommandBuilder()
 		.setName(name)
@@ -84,6 +102,7 @@ export function buildSlashCommands(): RESTPostAPIChatInputApplicationCommandsJSO
 		greetingCommand("goodbye"),
 		channelLockCommand("lock"),
 		channelLockCommand("unlock"),
+		mentionReminderCommand(),
 
 		new SlashCommandBuilder().setName("pause").setDescription("Tạm dừng bài hát đang phát"),
 
