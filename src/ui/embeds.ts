@@ -9,6 +9,7 @@ import {
 } from "discord.js";
 import { PREDEFINED_FILTERS, type Player, type PlayerManager, type Track } from "ziplayer";
 import type { LyricsResult, PlayerUserData } from "../types/bot.js";
+import { getPlaybackFallback } from "../core/streamProvenance.js";
 import { formatDuration, formatLoopMode, formatSourceBadge, truncate } from "../utils/format.js";
 
 export const COLORS = {
@@ -105,9 +106,11 @@ export function buildNowPlayingPayload(player: Player, disabled = false) {
 				});
 
 		const nextTrack = player.queue.nextTrack;
+		const fallback = getPlaybackFallback(player, track);
 		const descriptionLines = [
 			track.author ? `👤 **Nghệ sĩ / Kênh:** ${truncate(track.author, 100)}` : null,
-			`📡 **Nguồn:** ${formatSourceBadge(track.source)} • ⏱️ **Thời lượng:** \`${formatDuration(track.duration, track.isLive)}\``,
+			`📡 **Nguồn yêu cầu:** ${formatSourceBadge(track.source)} • ⏱️ **Thời lượng:** \`${formatDuration(track.duration, track.isLive)}\``,
+			fallback ? `⚠️ **Bản dự phòng:** ${truncate(fallback.title, 120)} — ${formatSourceBadge(fallback.source)} (có thể khác phiên bản)` : null,
 			`🙋 **Yêu cầu bởi:** ${formatRequester(track.requestedBy)}`,
 			"",
 			`${progress}`,
@@ -279,12 +282,13 @@ export function buildQueueEmbed(player: Player, requestedPage = 1) {
 
 	const lines: string[] = [];
 	if (current) {
+		const fallback = getPlaybackFallback(player, current);
 		lines.push(
 			`**🎶 Đang phát:**`,
 			`[${truncate(current.title, 70)}](${isValidHttpUrl(current.url) ? current.url : "https://discord.com"}) — \`${formatDuration(current.duration, current.isLive)}\` • ${formatRequester(current.requestedBy)}`,
-			`${player.getProgressBar({ size: 16, showPercentage: true })}`,
-			"",
 		);
+		if (fallback) lines.push(`⚠️ Bản dự phòng: ${truncate(fallback.title, 100)} — ${formatSourceBadge(fallback.source)} (có thể khác phiên bản)`);
+		lines.push(`${player.getProgressBar({ size: 16, showPercentage: true })}`, "");
 	}
 
 	if (slice.length > 0) {

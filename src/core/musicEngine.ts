@@ -18,7 +18,7 @@ import {
 	type Player,
 	type Track,
 } from "ziplayer";
-import { AttachmentsPlugin, SoundCloudPlugin, SpotifyPlugin, TTSPlugin, YouTubePlugin } from "@ziplayer/plugin";
+import { AttachmentsPlugin, SoundCloudPlugin, SpotifyPlugin, TTSPlugin } from "@ziplayer/plugin";
 import { AiAutoplayExtension, lavalinkExt, lyricsExt, voiceExt } from "@ziplayer/extension";
 import type { BotConfig, LyricsResult, PlayerUserData } from "../types/bot.js";
 import {
@@ -30,6 +30,8 @@ import { formatDuration, parseVoiceCommand, truncate } from "../utils/format.js"
 import { SessionPersistence } from "./persistence.js";
 import { AlwaysOnVoiceStore, type AlwaysOnVoiceTarget } from "./alwaysOnStore.js";
 import { installManagedAudioResources } from "./managedAudioResource.js";
+import { ResilientYouTubePlugin } from "./resilientYouTubePlugin.js";
+import { installStreamProvenance, tracePluginStreams } from "./streamProvenance.js";
 
 /** The dependency starts init() without awaiting it. Catch failures here so a
  * temporary Edge voice-list outage cannot cause an unhandled rejection; the
@@ -76,7 +78,7 @@ function excludeTtsFromMusicSources<T extends BasePlugin>(plugin: T): T {
 			return originalFallback(track, signal);
 		};
 	}
-	return plugin;
+	return tracePluginStreams(plugin);
 }
 
 export class ZiMusicBotEngine {
@@ -122,7 +124,7 @@ export class ZiMusicBotEngine {
 		this.ttsPlugin = new ResilientTTSPlugin({ defaultLang: config.ttsLang });
 		this.manager = new PlayerManager({
 			plugins: [
-				excludeTtsFromMusicSources(new YouTubePlugin()),
+				excludeTtsFromMusicSources(new ResilientYouTubePlugin()),
 				excludeTtsFromMusicSources(new SoundCloudPlugin()),
 				excludeTtsFromMusicSources(new SpotifyPlugin()),
 				this.ttsPlugin,
@@ -478,6 +480,7 @@ export class ZiMusicBotEngine {
 
 		this.guardPlayerLifecycle(player);
 		installManagedAudioResources(player, this.config.ffmpegPath);
+		installStreamProvenance(player);
 		return player;
 	}
 

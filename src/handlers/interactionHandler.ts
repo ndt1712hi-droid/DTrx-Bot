@@ -20,6 +20,8 @@ import {
 	CONTROL_IDS,
 } from "../ui/embeds.js";
 import { formatDuration, nextLoopMode, truncate } from "../utils/format.js";
+import { isDirectMusicQuery } from "../utils/musicQuery.js";
+import { AutocompleteValueStore, type AutocompleteScope } from "./autocompleteValues.js";
 import {
 	MusicCommandActions,
 	validateMemberVoiceAccess,
@@ -147,7 +149,15 @@ async function createSlashContext(
 	return { ok: true, ctx };
 }
 
-async function handleAutocomplete(engine: ZiMusicBotEngine, interaction: AutocompleteInteraction): Promise<void> {
+function autocompleteScope(interaction: AutocompleteInteraction | ChatInputCommandInteraction): AutocompleteScope {
+	return { userId: interaction.user.id, guildId: interaction.guildId, commandName: interaction.commandName };
+}
+
+async function handleAutocomplete(
+	engine: ZiMusicBotEngine,
+	interaction: AutocompleteInteraction,
+	values: AutocompleteValueStore,
+): Promise<void> {
 	try {
 		const focused = interaction.options.getFocused(true);
 		const value = focused.value.trim();
@@ -177,10 +187,11 @@ async function handleAutocomplete(engine: ZiMusicBotEngine, interaction: Autocom
 		}
 
 		if ((interaction.commandName === "play" || interaction.commandName === "playnext") && focused.name === "query") {
-			if (value.length < 2 || /^https?:\/\//i.test(value) || value.toLowerCase().startsWith("tts:")) {
+			const scope = autocompleteScope(interaction);
+			if (value.length < 2 || isDirectMusicQuery(value)) {
 				await interaction.respond(
 					value
-						? [{ name: truncate(`▶️ Phát trực tiếp: ${value}`, 100), value: truncate(value, 100) }]
+						? [{ name: truncate(`▶️ Phát trực tiếp: ${value}`, 100), value: values.encode(value, scope) }]
 						: [],
 				);
 				return;
@@ -193,13 +204,13 @@ async function handleAutocomplete(engine: ZiMusicBotEngine, interaction: Autocom
 			]).catch(() => null);
 
 			if (!result || !result.tracks?.length) {
-				await interaction.respond([{ name: truncate(`🔍 Tìm kiếm: ${value}`, 100), value: truncate(value, 100) }]);
+				await interaction.respond([{ name: truncate(`🔍 Tìm kiếm: ${value}`, 100), value: values.encode(value, scope) }]);
 				return;
 			}
 
 			const choices = result.tracks.slice(0, 10).map((t) => {
 				const label = truncate(`${t.title} [${formatDuration(t.duration, t.isLive)}]`, 100);
-				const choiceValue = t.url && t.url.length <= 100 ? t.url : truncate(t.title, 100);
+				const choiceValue = values.encode(t.url || t.title, scope);
 				return { name: label, value: choiceValue };
 			});
 
@@ -335,10 +346,11 @@ async function handleControllerComponent(
 }
 
 export function registerInteractionHandler(engine: ZiMusicBotEngine, actions: MusicCommandActions, autoReplyActions: AutoReplyActions): void {
+	const autocompleteValues = new AutocompleteValueStore();
 	engine.client.on("interactionCreate", async (interaction: Interaction) => {
 		try {
 			if (interaction.isAutocomplete()) {
-				await handleAutocomplete(engine, interaction);
+				await handleAutocomplete(engine, interaction, autocompleteValues);
 				return;
 			}
 
@@ -370,16 +382,28 @@ export function registerInteractionHandler(engine: ZiMusicBotEngine, actions: Mu
 			const { ctx } = resolvedCtx;
 
 			switch (interaction.commandName) {
-				case "play":
-					await actions.play(
-						ctx,
-						interaction.options.getString("query") ?? undefined,
-						interaction.options.getAttachment("file")?.url,
-					);
+				case "play": {
+					const input = interaction.options.getString("query");
+					const attachmentUrl = interaction.options.getAttachment("file")?.url;
+					const query = input && !attachmentUrl
+						? autocompleteValues.resolve(input, autocompleteScope(interaction))
+						: input;
+					if (input && !attachmentUrl && query === null) {
+						await ctx.reply({ content: "⚠️ Gợi ý đã hết hạn hoặc không thuộc phiên này. Hãy dán lại link/tên bài và gửi lệnh lại.", ephemeral: true });
+						return;
+					}
+					await actions.play(ctx, query ?? undefined, attachmentUrl);
 					break;
-				case "playnext":
-					await actions.playNext(ctx, interaction.options.getString("query", true));
+				}
+				case "playnext": {
+					const query = autocompleteValues.resolve(interaction.options.getString("query", true), autocompleteScope(interaction));
+					if (query === null) {
+						await ctx.reply({ content: "⚠️ Gợi ý đã hết hạn hoặc không thuộc phiên này. Hãy dán lại link/tên bài và gửi lệnh lại.", ephemeral: true });
+						return;
+					}
+					await actions.playNext(ctx, query);
 					break;
+				}
 				case "tts":
 					await actions.tts(ctx, interaction.options.getString("text", true));
 					break;

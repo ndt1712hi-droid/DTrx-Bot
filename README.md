@@ -119,10 +119,11 @@ docker run -d --name ziplayer-bot --env-file .env --restart unless-stopped zipla
 ### Phát nhạc và kiểm tra khi không có tiếng
 
 1. Vào cùng phòng thoại với bot. Nếu có hàng đợi cũ không mong muốn, dùng `/stop` (lệnh này xóa toàn bộ hàng đợi).
-2. Nhập `/play`, dán tên bài hoặc link vào ô `query`, sau đó gửi lệnh. Dùng link chỉ có `watch?v=...` nếu muốn phát một video thay vì cả danh sách Mix.
+2. Nhập `/play`, dán tên bài hoặc link vào ô `query`, sau đó gửi lệnh. Dùng link chỉ có `watch?v=...` nếu muốn phát một video thay vì cả danh sách Mix. `/playnext` chèn bài vào đầu hàng đợi. Link dài được giữ nguyên; nếu gợi ý hết hạn hoặc bot vừa khởi động lại, dán link và gửi lại.
 3. Dùng `/volume level:80` nếu âm lượng bằng 0; dùng `/resume` nếu nhạc đang tạm dừng.
 4. Bot phải có quyền **View Channel**, **Connect** và **Speak** trong phòng, và không bị tắt tiếng bởi quản trị viên. Với Stage, bot cần được mời làm diễn giả.
-5. Nếu bot đã vào phòng nhưng vẫn im lặng, xem log Botkeep có dòng `[Runtime]`, `[Voice]`, `[Playback]` hoặc `[ZiPlayer]`. Tiếng chuông vào phòng và thông báo đã thêm vào hàng đợi không chứng minh người nghe đã nhận được âm thanh.
+5. Khi YouTube yêu cầu đăng nhập/xác minh hoặc chặn truy cập từ máy chủ, bot có thể không tải được bản gốc. Nếu tìm thấy nguồn dự phòng, bot báo tên và nguồn của bản đó; bản dự phòng có thể khác phiên bản. Kiểm tra `/nowplaying` hoặc `/queue` để xem thông báo này.
+6. Nếu bot đã vào phòng nhưng vẫn im lặng, xem log Botkeep có dòng `[Runtime]`, `[Voice]`, `[YouTube]`, `[Playback]` hoặc `[ZiPlayer]`. Tiếng chuông vào phòng và thông báo đã thêm vào hàng đợi không chứng minh người nghe đã nhận được âm thanh.
 
 ### Trả lời tin nhắn tự động
 

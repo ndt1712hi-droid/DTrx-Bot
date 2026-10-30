@@ -14,6 +14,7 @@ import { PREDEFINED_FILTERS, type LoopMode, type Player } from "ziplayer";
 import type { ZiMusicBotEngine } from "../core/musicEngine.js";
 import { exportTrackToMp3Buffer } from "../core/exporter.js";
 import { waitForAudioDelivery } from "../core/playbackHealth.js";
+import { getPlaybackFallback } from "../core/streamProvenance.js";
 import type { PlayerUserData } from "../types/bot.js";
 import {
 	buildFullLyricsEmbed,
@@ -25,10 +26,12 @@ import {
 import {
 	formatDuration,
 	formatLoopMode,
+	formatSourceBadge,
 	parseTimeInput,
 	sanitizeFilename,
 	truncate,
 } from "../utils/format.js";
+import { normalizeMusicQuery } from "../utils/musicQuery.js";
 
 export interface ReplyPayload {
 	content?: string;
@@ -167,7 +170,7 @@ export class MusicCommandActions {
 	}
 
 	async play(ctx: CommandContext, query?: string, attachmentUrl?: string): Promise<void> {
-		const effectiveQuery = (attachmentUrl || query || "").trim();
+		const effectiveQuery = normalizeMusicQuery(attachmentUrl || query || "");
 		if (!effectiveQuery) {
 			await ctx.reply({
 				embeds: [
@@ -249,8 +252,12 @@ export class MusicCommandActions {
 					],
 				});
 			} else {
-				const title = truncate(player.currentTrack?.title || effectiveQuery, 140);
 				const delivery = await waitForAudioDelivery(player);
+				const fallback = getPlaybackFallback(player, player.currentTrack);
+				const title = truncate(fallback?.title || player.currentTrack?.title || effectiveQuery, 140);
+				const fallbackHint = fallback && delivery !== "replaced"
+					? `\n⚠️ Không tải được nguồn gốc; bot chọn bản dự phòng từ ${formatSourceBadge(fallback.source)} (có thể khác phiên bản).`
+					: "";
 				const descriptions: Record<typeof delivery, string> = {
 					delivering: `🎶 Đang gửi âm thanh: **${title}** tại <#${access.voiceChannel.id}>.`,
 					muted: `🔇 Đã tải **${title}** nhưng âm lượng đang là 0. Dùng \`/volume 80\` để bật tiếng.`,
@@ -267,7 +274,7 @@ export class MusicCommandActions {
 					console.warn(`[Playback] Chưa xác nhận âm thanh server=${player.guildId} result=${delivery} voice=${player.connection?.state.status ?? "none"} audio=${player.audioPlayer.state.status} volume=${player.volume}`);
 				}
 				await ctx.reply({
-					embeds: [infoEmbed(descriptions[delivery], delivery === "delivering" ? COLORS.PLAYING : COLORS.INFO)],
+					embeds: [infoEmbed(descriptions[delivery] + fallbackHint, delivery === "delivering" ? COLORS.PLAYING : COLORS.INFO)],
 				});
 			}
 		} catch (err) {
@@ -279,7 +286,7 @@ export class MusicCommandActions {
 	}
 
 	async playNext(ctx: CommandContext, query: string): Promise<void> {
-		const trimmed = query.trim();
+		const trimmed = normalizeMusicQuery(query);
 		if (!trimmed) {
 			await ctx.reply({
 				embeds: [infoEmbed("❌ Vui lòng nhập tên bài hát hoặc URL cần chèn phát kế tiếp!", COLORS.ERROR)],
