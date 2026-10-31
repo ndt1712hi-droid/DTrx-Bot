@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import type { Readable } from "node:stream";
 import type { BasePlugin, Player, Track } from "ziplayer";
 
 export interface PlaybackFallback {
@@ -8,6 +10,12 @@ export interface PlaybackFallback {
 
 const STREAM_SOURCE_KEY = "__dtrxResolvedSource";
 const playbackFallbacks = new WeakMap<Player, WeakMap<Track, PlaybackFallback>>();
+type StreamResolution = { opened: Set<Readable>; finished: boolean; selected?: Readable };
+const streamResolutions = new AsyncLocalStorage<StreamResolution>();
+
+function discardStream(stream: Readable): void {
+	try { if (!stream.destroyed) stream.destroy(); } catch { /* best-effort cleanup */ }
+}
 
 /** Include the actual track in StreamInfo so ZiPlayer's fallback resolver does
  * not silently make a different recording look like the requested one. */
@@ -16,6 +24,9 @@ export function tracePluginStreams<T extends BasePlugin>(plugin: T): T {
 	plugin.getStream = async (track, signal) => {
 		const result = await original(track, signal);
 		if (!result?.stream) return result;
+		const resolution = streamResolutions.getStore();
+		if (resolution?.finished && resolution.selected !== result.stream) discardStream(result.stream);
+		else resolution?.opened.add(result.stream);
 		return {
 			...result,
 			metadata: {
@@ -34,16 +45,31 @@ export function installStreamProvenance(player: Player): void {
 	const resolved = new WeakMap<Track, PlaybackFallback>();
 	playbackFallbacks.set(player, resolved);
 	const original = player.pluginManager.getStream.bind(player.pluginManager);
-	player.pluginManager.getStream = async (track, options) => {
-		const result = await original(track, options);
-		const source: unknown = result?.metadata?.[STREAM_SOURCE_KEY];
-		if (isPlaybackFallback(source) &&
-			(source.source.toLowerCase() !== track.source?.toLowerCase() || source.id !== track.id)) {
-			resolved.set(track, source);
-		} else {
-			resolved.delete(track);
-		}
-		return result;
+	player.pluginManager.getStream = (track, options) => {
+		const resolution: StreamResolution = { opened: new Set(), finished: false };
+		return streamResolutions.run(resolution, async () => {
+			let selected: Readable | undefined;
+			try {
+				const result = await original(track, options);
+				selected = result?.stream;
+				const source: unknown = result?.metadata?.[STREAM_SOURCE_KEY];
+				if (isPlaybackFallback(source) &&
+					(source.source.toLowerCase() !== track.source?.toLowerCase() || source.id !== track.id)) {
+					resolved.set(track, source);
+				} else {
+					resolved.delete(track);
+				}
+				return result;
+			} finally {
+				// ZiPlayer can compare several valid fallback streams but does not
+				// dispose the losers. Isolate cleanup per concurrent resolution;
+				// a provider completing after a timeout is also discarded by trace.
+				resolution.selected = selected;
+				resolution.finished = true;
+				for (const stream of resolution.opened) if (stream !== selected) discardStream(stream);
+				resolution.opened.clear();
+			}
+		});
 	};
 }
 

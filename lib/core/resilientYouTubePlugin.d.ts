@@ -1,5 +1,5 @@
 import { YouTubePlugin, type PluginOptions } from "@ziplayer/plugin";
-import type { SearchResult } from "ziplayer";
+import type { SearchResult, StreamInfo, Track } from "ziplayer";
 /**
  * The installed YouTube plugin treats an empty `basic_info` object as a valid
  * video when YouTube returns LOGIN_REQUIRED. It can then queue `id: undefined`
@@ -7,7 +7,9 @@ import type { SearchResult } from "ziplayer";
  * the public text-search method, and never return malformed tracks.
  */
 export declare class ResilientYouTubePlugin extends YouTubePlugin {
-    constructor(options?: PluginOptions);
+    private readonly fallbackBudgetMs;
+    constructor(options?: PluginOptions, fallbackBudgetMs?: number);
+    getFallback(track: Track, signal?: AbortSignal): Promise<StreamInfo>;
     search(query: string, requestedBy: string): Promise<SearchResult>;
     private findExactById;
     /**

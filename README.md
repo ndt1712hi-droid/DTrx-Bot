@@ -131,8 +131,9 @@ docker run -d --name ziplayer-bot --env-file .env -v "$(pwd)/data:/app/data" --r
 2. Nhập `/play`, dán tên bài hoặc link vào ô `query`, sau đó gửi lệnh. Dùng link chỉ có `watch?v=...` nếu muốn phát một video thay vì cả danh sách Mix. `/playnext` chèn bài vào đầu hàng đợi. Link dài được giữ nguyên; nếu gợi ý hết hạn hoặc bot vừa khởi động lại, dán link và gửi lại.
 3. Dùng `/volume level:80` nếu âm lượng bằng 0; dùng `/resume` nếu nhạc đang tạm dừng.
 4. Bot phải có quyền **View Channel**, **Connect** và **Speak** trong phòng, và không bị tắt tiếng bởi quản trị viên. Với Stage, bot cần được mời làm diễn giả.
-5. Khi YouTube yêu cầu đăng nhập/xác minh hoặc chặn truy cập từ máy chủ, bot có thể không tải được bản gốc. Nếu tìm thấy nguồn dự phòng, bot báo tên và nguồn của bản đó; bản dự phòng có thể khác phiên bản. Kiểm tra `/nowplaying` hoặc `/queue` để xem thông báo này.
-6. Nếu bot đã vào phòng nhưng vẫn im lặng, xem log Botkeep có dòng `[Runtime]`, `[Voice]`, `[YouTube]`, `[Playback]` hoặc `[ZiPlayer]`. Tiếng chuông vào phòng và thông báo đã thêm vào hàng đợi không chứng minh người nghe đã nhận được âm thanh.
+5. Bot thử nguồn gốc trước. Nếu nguồn đó không tải được, bot thử tìm một số bản phù hợp trên YouTube/SoundCloud, ưu tiên cùng bài và ca sĩ khi nhận diện được; kết quả chỉ là so khớp gần đúng và có thể là bản cover, live hoặc ca sĩ khác. Bot báo tên và nguồn bản thực sự được chọn; xem `/nowplaying` hoặc `/queue`. Để tiết kiệm tài nguyên, mỗi nguồn chỉ tìm tối đa 3 lượt và thử tối đa 3 luồng; nếu không tìm thấy bản đủ phù hợp, bot không cố phát bài không liên quan.
+6. Không thể bảo đảm phát mọi bài: nội dung riêng tư, bị xóa, giới hạn khu vực, được bảo vệ bản quyền/DRM, hoặc bị chặn bởi nhà cung cấp hay mạng Botkeep có thể không truy cập được. Spotify cung cấp thông tin bài hát; âm thanh phải lấy từ nguồn khác.
+7. Nếu bot đã vào phòng nhưng vẫn im lặng, xem log Botkeep có dòng `[Runtime]`, `[Voice]`, `[YouTube]`, `[SoundCloud]`, `[MusicFallback]`, `[Playback]` hoặc `[ZiPlayer]`. Trước khi gửi log cho người khác, xóa token, thông tin đăng nhập và URL có chữ ký. Tiếng chuông vào phòng và thông báo đã thêm vào hàng đợi không chứng minh người nghe đã nhận được âm thanh.
 
 ### Trả lời tin nhắn tự động
 

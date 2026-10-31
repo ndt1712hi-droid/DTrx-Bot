@@ -18,7 +18,7 @@ import {
 	type Player,
 	type Track,
 } from "ziplayer";
-import { AttachmentsPlugin, SoundCloudPlugin, SpotifyPlugin, TTSPlugin } from "@ziplayer/plugin";
+import { AttachmentsPlugin, SpotifyPlugin, TTSPlugin } from "@ziplayer/plugin";
 import { AiAutoplayExtension, lavalinkExt, lyricsExt, voiceExt } from "@ziplayer/extension";
 import type { BotConfig, LyricsResult, PlayerUserData } from "../types/bot.js";
 import {
@@ -31,6 +31,7 @@ import { SessionPersistence } from "./persistence.js";
 import { AlwaysOnVoiceStore, type AlwaysOnVoiceTarget } from "./alwaysOnStore.js";
 import { installManagedAudioResources } from "./managedAudioResource.js";
 import { ResilientYouTubePlugin } from "./resilientYouTubePlugin.js";
+import { ResilientSoundCloudPlugin } from "./resilientSoundCloudPlugin.js";
 import { installStreamProvenance, tracePluginStreams } from "./streamProvenance.js";
 
 /** The dependency starts init() without awaiting it. Catch failures here so a
@@ -122,10 +123,13 @@ export class ZiMusicBotEngine {
 		}
 
 		this.ttsPlugin = new ResilientTTSPlugin({ defaultLang: config.ttsLang });
+		// Keep the resolver's own deadline below ZiPlayer's non-cancelling
+		// extractor timeout so abandoned searches/streams do not keep piling up.
+		const fallbackBudgetMs = Math.max(1_000, Math.min(25_000, config.extractorTimeoutMs - 750));
 		this.manager = new PlayerManager({
 			plugins: [
-				excludeTtsFromMusicSources(new ResilientYouTubePlugin()),
-				excludeTtsFromMusicSources(new SoundCloudPlugin()),
+				excludeTtsFromMusicSources(new ResilientYouTubePlugin(undefined, fallbackBudgetMs)),
+				excludeTtsFromMusicSources(new ResilientSoundCloudPlugin(fallbackBudgetMs)),
 				excludeTtsFromMusicSources(new SpotifyPlugin()),
 				this.ttsPlugin,
 				excludeTtsFromMusicSources(new AttachmentsPlugin({ maxFileSize: 25 * 1024 * 1024 })),

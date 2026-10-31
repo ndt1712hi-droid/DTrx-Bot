@@ -1,5 +1,6 @@
 import { YouTubePlugin, type PluginOptions } from "@ziplayer/plugin";
-import type { SearchResult, Track } from "ziplayer";
+import type { SearchResult, StreamInfo, Track } from "ziplayer";
+import { resolveSimilarMusic } from "./similarMusicFallback.js";
 
 const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 
@@ -37,9 +38,17 @@ type YouTubeCompatibility = {
  * the public text-search method, and never return malformed tracks.
  */
 export class ResilientYouTubePlugin extends YouTubePlugin {
-	constructor(options?: PluginOptions) {
+	constructor(options?: PluginOptions, private readonly fallbackBudgetMs = 25_000) {
 		super(options);
 		this.repairMixFeedFallback();
+	}
+
+	override async getFallback(track: Track, signal?: AbortSignal): Promise<StreamInfo> {
+		return resolveSimilarMusic({
+			requested: track, source: this.name, signal, budgetMs: this.fallbackBudgetMs,
+			search: (query, requestedBy) => this.search(query, requestedBy),
+			open: (candidate, candidateSignal) => this.getStream(candidate, candidateSignal),
+		});
 	}
 
 	override async search(query: string, requestedBy: string): Promise<SearchResult> {
