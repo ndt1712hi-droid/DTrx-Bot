@@ -1,8 +1,8 @@
-export declare const MIN_INTERVAL_SECONDS = 10;
-export declare const MAX_INTERVAL_SECONDS = 3600;
+export declare const MIN_INTERVAL_SECONDS = 5;
+export declare const MAX_INTERVAL_SECONDS = 100;
 export declare const DEFAULT_INTERVAL_SECONDS = 30;
-export declare const MAX_REMINDERS_PER_RUN = 10;
-export declare const MAX_TRACKED_REMINDER_MESSAGES = 100;
+export declare const MAX_REMINDERS_PER_RUN = 100;
+export declare const MAX_TRACKED_REMINDER_MESSAGES = 500;
 export declare const MAX_REMINDER_TEXT = 200;
 export declare const DEFAULT_REMINDER_TEXT = "C\u00F3 l\u1EDDi nh\u1EAFc d\u00E0nh cho b\u1EA1n.";
 export interface MentionReminderConfig {

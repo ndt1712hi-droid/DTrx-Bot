@@ -10,12 +10,11 @@ export interface MentionReminderInput {
     count?: number;
     text?: string;
 }
-/** One short, explicitly approved reminder run per guild; nothing resumes after a restart. */
+/** One bounded reminder run per guild; nothing resumes after a restart. */
 export declare class MentionReminderService {
     private readonly client;
     private readonly store;
     private readonly schedule;
-    private readonly pending;
     private readonly active;
     private readonly reserved;
     private readonly lastSent;
@@ -28,7 +27,7 @@ export declare class MentionReminderService {
     private channelFor;
     private validateTarget;
     private configure;
-    private requestConsent;
+    private startRun;
     handleButton(interaction: ButtonInteraction): Promise<void>;
     private scheduleTick;
     private isRunning;

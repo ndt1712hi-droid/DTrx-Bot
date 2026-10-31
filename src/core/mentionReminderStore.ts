@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-export const MIN_INTERVAL_SECONDS = 10;
-export const MAX_INTERVAL_SECONDS = 3600;
+export const MIN_INTERVAL_SECONDS = 5;
+export const MAX_INTERVAL_SECONDS = 100;
+// Versions through 1.3.0 accepted longer intervals; load those records without silently changing them.
+const LEGACY_MAX_INTERVAL_SECONDS = 3600;
 export const DEFAULT_INTERVAL_SECONDS = 30;
-export const MAX_REMINDERS_PER_RUN = 10;
-export const MAX_TRACKED_REMINDER_MESSAGES = 100;
+export const MAX_REMINDERS_PER_RUN = 100;
+export const MAX_TRACKED_REMINDER_MESSAGES = 500;
 export const MAX_REMINDER_TEXT = 200;
 export const DEFAULT_REMINDER_TEXT = "Có lời nhắc dành cho bạn.";
 
@@ -115,18 +117,18 @@ export class MentionReminderStore {
 		const ref = value as Partial<ReminderMessageRef>;
 		return this.validId(ref.channelId) && this.validId(ref.messageId);
 	}
-	private validConfig(value: unknown): value is MentionReminderConfig {
+	private validConfig(value: unknown, maxIntervalSeconds = MAX_INTERVAL_SECONDS): value is MentionReminderConfig {
 		if (!value || typeof value !== "object") return false;
 		const config = value as Partial<MentionReminderConfig>;
 		return this.validId(config.guildId) && this.validId(config.channelId) && this.validId(config.targetId) &&
-			Number.isInteger(config.intervalSeconds) && config.intervalSeconds! >= MIN_INTERVAL_SECONDS && config.intervalSeconds! <= MAX_INTERVAL_SECONDS &&
+			Number.isInteger(config.intervalSeconds) && config.intervalSeconds! >= MIN_INTERVAL_SECONDS && config.intervalSeconds! <= maxIntervalSeconds &&
 			Number.isInteger(config.count) && config.count! >= 1 && config.count! <= MAX_REMINDERS_PER_RUN &&
 			typeof config.text === "string" && Boolean(config.text.trim()) && config.text.length <= MAX_REMINDER_TEXT;
 	}
 	private validRecord(value: unknown): value is MentionReminderRecord {
 		if (!value || typeof value !== "object") return false;
 		const record = value as Partial<MentionReminderRecord>;
-		if (!this.validId(record.guildId) || !(record.config === null || this.validConfig(record.config)) ||
+		if (!this.validId(record.guildId) || !(record.config === null || this.validConfig(record.config, LEGACY_MAX_INTERVAL_SECONDS)) ||
 			(record.config && record.config.guildId !== record.guildId) || !Array.isArray(record.messages) ||
 			record.messages.length > MAX_TRACKED_REMINDER_MESSAGES || record.messages.some((ref) => !this.validRef(ref))) return false;
 		const keys = record.messages.map((ref) => JSON.stringify([ref.channelId, ref.messageId]));

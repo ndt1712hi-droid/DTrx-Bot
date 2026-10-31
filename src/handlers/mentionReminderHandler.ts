@@ -32,7 +32,6 @@ type Mode = "set" | "on" | "off" | "delete" | "clear" | "status";
 type Schedule = (task: () => void | Promise<void>, milliseconds: number) => () => void;
 export interface MentionReminderInput { targetId?: string; channelId?: string; intervalSeconds?: number; count?: number; text?: string }
 
-const REQUEST_TIMEOUT_MS = 120_000;
 const MAX_CONCURRENT_GUILDS = 4;
 const BUTTON_PREFIX = "tagremind:";
 
@@ -41,15 +40,6 @@ const defaultSchedule: Schedule = (task, milliseconds) => {
 	handle.unref();
 	return () => clearTimeout(handle);
 };
-interface PendingRequest {
-	token: string;
-	guild: Guild;
-	config: MentionReminderConfig;
-	requesterId: string;
-	messageId: string;
-	expiresAt: number;
-	cancelTimer: () => void;
-}
 interface ActiveRun {
 	token: string;
 	guild: Guild;
@@ -61,17 +51,10 @@ interface ActiveRun {
 	inFlight?: Promise<void>;
 }
 
-function buttonRow(token: string, kind: "approval" | "stop"): ActionRowBuilder<ButtonBuilder> {
-	const row = new ActionRowBuilder<ButtonBuilder>();
-	if (kind === "approval") {
-		row.addComponents(
-			new ButtonBuilder().setCustomId(`${BUTTON_PREFIX}yes:${token}`).setLabel("Đồng ý").setStyle(ButtonStyle.Success),
-			new ButtonBuilder().setCustomId(`${BUTTON_PREFIX}no:${token}`).setLabel("Từ chối").setStyle(ButtonStyle.Secondary),
-		);
-	} else {
-		row.addComponents(new ButtonBuilder().setCustomId(`${BUTTON_PREFIX}stop:${token}`).setLabel("Dừng tag").setStyle(ButtonStyle.Danger));
-	}
-	return row;
+function buttonRow(token: string): ActionRowBuilder<ButtonBuilder> {
+	return new ActionRowBuilder<ButtonBuilder>().addComponents(
+		new ButtonBuilder().setCustomId(`${BUTTON_PREFIX}stop:${token}`).setLabel("Dừng tag").setStyle(ButtonStyle.Danger),
+	);
 }
 function isUnknownMessage(err: unknown): boolean {
 	return Boolean(err && typeof err === "object" && "code" in err && (err as { code?: unknown }).code === 10008);
@@ -80,9 +63,8 @@ function isUnknownChannel(err: unknown): boolean {
 	return Boolean(err && typeof err === "object" && "code" in err && (err as { code?: unknown }).code === 10003);
 }
 
-/** One short, explicitly approved reminder run per guild; nothing resumes after a restart. */
+/** One bounded reminder run per guild; nothing resumes after a restart. */
 export class MentionReminderService {
-	private readonly pending = new Map<string, PendingRequest>();
 	private readonly active = new Map<string, ActiveRun>();
 	private readonly reserved = new Set<string>();
 	private readonly lastSent = new Map<string, number>();
@@ -93,15 +75,11 @@ export class MentionReminderService {
 
 	async close(): Promise<void> {
 		this.closed = true;
-		for (const request of this.pending.values()) request.cancelTimer();
-		this.pending.clear();
 		for (const run of this.active.values()) { run.cancelled = true; run.cancelTimer?.(); }
 		await Promise.allSettled([...this.active.values()].map((run) => run.inFlight).filter((work): work is Promise<void> => Boolean(work)));
 		this.active.clear();
 		await Promise.allSettled([...this.queues.values()]);
-		// A pending command may have completed while shutdown was draining queues.
-		for (const request of this.pending.values()) request.cancelTimer();
-		this.pending.clear();
+		// An in-flight command may have completed while shutdown was draining queues.
 		for (const run of this.active.values()) { run.cancelled = true; run.cancelTimer?.(); }
 		this.active.clear();
 		this.reserved.clear();
@@ -127,10 +105,10 @@ export class MentionReminderService {
 			}
 			try {
 				if (mode === "set") await this.configure(ctx, caller, input);
-				else if (mode === "on") await this.requestConsent(ctx, caller);
+				else if (mode === "on") await this.startRun(ctx, caller);
 				else if (mode === "off") {
 					const stopped = await this.stop(ctx.guild.id);
-					await ctx.reply({ content: stopped ? "🛑 Đã dừng nhắc tag; cấu hình vẫn được giữ." : "ℹ️ Hiện không có đợt tag hoặc yêu cầu đồng ý đang chạy.", ephemeral: true });
+					await ctx.reply({ content: stopped ? "🛑 Đã dừng nhắc tag; cấu hình vẫn được giữ." : "ℹ️ Hiện không có đợt tag đang chạy.", ephemeral: true });
 				} else if (mode === "delete") {
 					await this.stop(ctx.guild.id);
 					const removed = await this.store.deleteConfig(ctx.guild.id);
@@ -141,7 +119,7 @@ export class MentionReminderService {
 				} else if (mode === "status") {
 					const record = await this.store.get(ctx.guild.id);
 					const c = record?.config;
-					const state = this.active.has(ctx.guild.id) ? "Đang chạy" : this.pending.has(ctx.guild.id) ? "Chờ người nhận đồng ý" : "Đang dừng";
+					const state = this.active.has(ctx.guild.id) ? "Đang chạy" : "Đang dừng";
 					const detail = c ? `**Người nhận ID:** \`${c.targetId}\`\n**Kênh:** <#${c.channelId}>\n**Khoảng cách:** ${c.intervalSeconds} giây\n**Tối đa:** ${c.count} lần mỗi đợt` : "Chưa có cấu hình. Dùng `/spam set`.";
 					await ctx.reply({ content: `**Nhắc tag:** ${state}\n${detail}\n**Tin bot có thể dọn:** ${record?.messages.length ?? 0}`, ephemeral: true });
 				}
@@ -167,7 +145,7 @@ export class MentionReminderService {
 			guild.members.fetchMe({ force: true }).catch(() => null),
 		]);
 		if (!target || target.user.bot) return { error: "❌ Hãy chọn một thành viên thật đang có mặt trong server." };
-		if (!channel.permissionsFor(target)?.has(PermissionFlagsBits.ViewChannel)) return { error: "❌ Người được chọn không xem được kênh để xác nhận." };
+		if (!channel.permissionsFor(target)?.has(PermissionFlagsBits.ViewChannel)) return { error: "❌ Người được chọn không xem được kênh để nhận tin và dùng nút dừng." };
 		if (!bot || !channel.permissionsFor(bot)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages])) {
 			return { error: "❌ Bot cần quyền **Xem kênh** và **Gửi tin nhắn** trong kênh đã chọn." };
 		}
@@ -188,91 +166,69 @@ export class MentionReminderService {
 		if ("error" in validated) { await ctx.reply({ content: validated.error, ephemeral: true }); return; }
 		await this.stop(ctx.guild.id);
 		await this.store.setConfig(config);
-		await ctx.reply({ content: `✅ Đã lưu người nhận và kênh <#${config.channelId}>: ${config.intervalSeconds} giây/lần, tối đa ${config.count} lần. Dùng \`/spam on\` để xin người đó đồng ý; chưa gửi tag nào.`, ephemeral: true });
+		await ctx.reply({ content: `✅ Đã lưu người nhận và kênh <#${config.channelId}>: ${config.intervalSeconds} giây/lần, tối đa ${config.count} lần. Dùng \`/spam on\` để bắt đầu; chưa gửi tag nào.`, ephemeral: true });
 	}
 
-	private async requestConsent(ctx: CommandContext, caller: GuildMember): Promise<void> {
+	private async startRun(ctx: CommandContext, caller: GuildMember): Promise<void> {
 		const record = await this.store.get(ctx.guild.id);
 		if (!record?.config) { await ctx.reply({ content: "❌ Chưa có cấu hình. Dùng `/spam set` trước.", ephemeral: true }); return; }
-		if (this.pending.has(ctx.guild.id) || this.active.has(ctx.guild.id)) {
-			await ctx.reply({ content: "ℹ️ Đợt tag đang chạy hoặc đang chờ đồng ý. Dùng `/spam off` để dừng.", ephemeral: true }); return;
+		// Older releases allowed intervals above the current maximum. Preserve those records,
+		// but require an explicit /set rather than silently making their reminders much faster.
+		if (record.config.intervalSeconds < MIN_INTERVAL_SECONDS || record.config.intervalSeconds > MAX_INTERVAL_SECONDS) {
+			await ctx.reply({ content: `⚠️ Khoảng cách đã lưu không còn hợp lệ. Dùng \`/spam set\` đặt lại từ ${MIN_INTERVAL_SECONDS} đến ${MAX_INTERVAL_SECONDS} giây.`, ephemeral: true }); return;
 		}
-		if (this.pending.size + this.active.size + this.reserved.size >= MAX_CONCURRENT_GUILDS) {
+		if (this.active.has(ctx.guild.id)) {
+			await ctx.reply({ content: "ℹ️ Đợt tag đang chạy. Dùng `/spam off` để dừng.", ephemeral: true }); return;
+		}
+		// Reserve before channel/member fetches so concurrent servers cannot exceed the shared cap.
+		if (this.active.size + this.reserved.size >= MAX_CONCURRENT_GUILDS) {
 			await ctx.reply({ content: "⚠️ Bot đang xử lý đủ số đợt nhắc tag; hãy thử lại sau.", ephemeral: true }); return;
 		}
-		if (record.messages.length + record.config.count + 1 > MAX_TRACKED_REMINDER_MESSAGES) {
+		if (record.messages.length + record.config.count > MAX_TRACKED_REMINDER_MESSAGES) {
 			await ctx.reply({ content: "⚠️ Danh sách tin bot đã đầy; dùng `/spam clear` trước khi bắt đầu đợt mới.", ephemeral: true }); return;
 		}
 		this.reserved.add(ctx.guild.id);
 		try {
 			const validated = await this.validateTarget(ctx.guild, caller, record.config);
 			if ("error" in validated) { await ctx.reply({ content: validated.error, ephemeral: true }); return; }
-			const token = randomUUID();
-			const config = { ...record.config };
-			const sent = await validated.channel.send({
-				content: `<@${config.targetId}>, có người muốn gửi bạn tối đa ${config.count} lời nhắc, cách nhau ${config.intervalSeconds} giây. Bạn chọn **Đồng ý** để bắt đầu hoặc **Từ chối**. Yêu cầu hết hạn sau 2 phút.`,
-				allowedMentions: { parse: [], users: [] }, // The approval request itself must not ping.
-				components: [buttonRow(token, "approval")],
-			});
-			if (this.closed) { await sent.delete().catch(() => undefined); return; }
-			try { await this.store.addMessage(ctx.guild.id, { channelId: config.channelId, messageId: sent.id }); }
-			catch (err) { await sent.delete().catch(() => undefined); throw err; }
-			if (this.closed) {
-				await sent.delete().catch(() => undefined);
-				return;
-			}
-			const request: PendingRequest = {
-				token, guild: ctx.guild, config, requesterId: ctx.userId, messageId: sent.id,
-				expiresAt: Date.now() + REQUEST_TIMEOUT_MS, cancelTimer: () => undefined,
+			if (this.closed) { await ctx.reply({ content: "❌ Chức năng nhắc tag đang đóng.", ephemeral: true }); return; }
+			const run: ActiveRun = {
+				token: randomUUID(), guild: ctx.guild, config: { ...record.config }, requesterId: ctx.userId,
+				sent: 0, cancelled: false,
 			};
-			request.cancelTimer = this.schedule(() => this.queue(ctx.guild.id, async () => {
-				if (this.pending.get(ctx.guild.id) === request) this.pending.delete(ctx.guild.id);
-			}), REQUEST_TIMEOUT_MS);
-			this.pending.set(ctx.guild.id, request);
-			await ctx.reply({ content: `📨 Đã gửi yêu cầu đồng ý trong <#${config.channelId}>. Bot chỉ tag sau khi người được chọn nhấn **Đồng ý**; yêu cầu không tự ping.`, ephemeral: true });
-		} finally { this.reserved.delete(ctx.guild.id); }
+			const previousSend = this.lastSent.get(ctx.guild.id) ?? 0;
+			const delay = Math.max(0, MIN_INTERVAL_SECONDS * 1000 - (Date.now() - previousSend));
+			// Transfer the reservation to an active slot without an await between the two operations.
+			this.reserved.delete(ctx.guild.id);
+			this.active.set(ctx.guild.id, run);
+			try {
+				this.scheduleTick(run, delay);
+				await ctx.reply({ content: `✅ Đã bắt đầu tag trong <#${run.config.channelId}>: tối đa ${run.config.count} lần, cách nhau ${run.config.intervalSeconds} giây. Dùng \`/spam off\` hoặc nút **Dừng tag** để dừng.`, ephemeral: true });
+			} catch (err) {
+				await this.stop(ctx.guild.id);
+				throw err;
+			}
+		} finally {
+			this.reserved.delete(ctx.guild.id);
+		}
 	}
 
 	async handleButton(interaction: ButtonInteraction): Promise<void> {
 		const guildId = interaction.guildId;
 		const match = /^tagremind:(yes|no|stop):([a-f0-9-]{36})$/.exec(interaction.customId);
-		if (!guildId || !match || this.closed) {
+		if (!guildId || !match || this.closed || match[1] !== "stop") {
+			// Old consent buttons from previous releases are deliberately inert after an upgrade.
 			await interaction.reply({ content: "ℹ️ Nút này đã hết hiệu lực.", flags: MessageFlags.Ephemeral }); return;
 		}
 		await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 		await this.queue(guildId, async () => {
-			const action = match[1], token = match[2];
-			if (action === "stop") {
-				const run = this.active.get(guildId);
-				if (!run || run.token !== token) { await interaction.editReply({ content: "ℹ️ Đợt tag này đã dừng." }); return; }
-				if (interaction.user.id !== run.config.targetId && interaction.user.id !== run.requesterId && !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-					await interaction.editReply({ content: "❌ Chỉ người nhận, người bắt đầu hoặc quản trị viên có thể dừng đợt này." }); return;
-				}
-				await this.stop(guildId);
-				await interaction.editReply({ content: "🛑 Đã dừng tag." });
-				return;
+			const run = this.active.get(guildId);
+			if (!run || run.token !== match[2]) { await interaction.editReply({ content: "ℹ️ Đợt tag này đã dừng." }); return; }
+			if (interaction.user.id !== run.config.targetId && interaction.user.id !== run.requesterId && !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+				await interaction.editReply({ content: "❌ Chỉ người nhận, người bắt đầu hoặc quản trị viên có thể dừng đợt này." }); return;
 			}
-			const request = this.pending.get(guildId);
-			if (!request || request.token !== token || request.messageId !== interaction.message.id || Date.now() >= request.expiresAt) {
-				if (request?.token === token && Date.now() >= request.expiresAt) { request.cancelTimer(); this.pending.delete(guildId); }
-				await interaction.editReply({ content: "ℹ️ Yêu cầu đã hết hạn hoặc đã được xử lý." }); return;
-			}
-			if (interaction.user.id !== request.config.targetId) {
-				await interaction.editReply({ content: "❌ Chỉ người được chọn mới có thể đồng ý hoặc từ chối." }); return;
-			}
-			request.cancelTimer(); this.pending.delete(guildId);
-			if (action === "no") { await interaction.editReply({ content: "✅ Đã từ chối; bot sẽ không gửi tag." }); return; }
-			const run: ActiveRun = { token, guild: request.guild, config: request.config, requesterId: request.requesterId, sent: 0, cancelled: false };
-			this.active.set(guildId, run);
-			// Make stopping available immediately, even before the first timed message.
-			await interaction.message.edit({
-				content: `<@${run.config.targetId}> đã đồng ý nhận tối đa ${run.config.count} lời nhắc. Bạn có thể dừng bất kỳ lúc nào.`,
-				allowedMentions: { parse: [], users: [] }, components: [buttonRow(run.token, "stop")],
-			}).catch((err: unknown) => console.warn("[MentionReminder] Không thể cập nhật nút dừng:", err instanceof Error ? err.message : err));
-			const previousSend = this.lastSent.get(guildId) ?? 0;
-			const delay = Math.max(0, MIN_INTERVAL_SECONDS * 1000 - (Date.now() - previousSend));
-			if (this.isRunning(run)) this.scheduleTick(run, delay);
-			await interaction.editReply({ content: `✅ Bạn đã đồng ý nhận tối đa ${run.config.count} lời nhắc. Bấm **Dừng tag** trong tin bất kỳ lúc nào để dừng.` });
+			await this.stop(guildId);
+			await interaction.editReply({ content: "🛑 Đã dừng tag." });
 		});
 	}
 
@@ -297,7 +253,7 @@ export class MentionReminderService {
 			const message = await channel.send({
 				content: `<@${run.config.targetId}> ${run.config.text}`,
 				allowedMentions: { parse: [], users: [run.config.targetId], repliedUser: false },
-				components: [buttonRow(run.token, "stop")],
+				components: [buttonRow(run.token)],
 			});
 			const now = Date.now();
 			for (const [id, sentAt] of this.lastSent) if (now - sentAt >= MIN_INTERVAL_SECONDS * 1000) this.lastSent.delete(id);
@@ -317,8 +273,6 @@ export class MentionReminderService {
 
 	private async stop(guildId: string): Promise<boolean> {
 		let changed = false;
-		const request = this.pending.get(guildId);
-		if (request) { request.cancelTimer(); this.pending.delete(guildId); changed = true; }
 		const run = this.active.get(guildId);
 		if (run) {
 			run.cancelled = true; run.cancelTimer?.();

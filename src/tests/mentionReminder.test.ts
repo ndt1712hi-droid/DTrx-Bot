@@ -95,46 +95,35 @@ async function fixture(options: { callerCanManage?: boolean; botCanSend?: boolea
 	async function configure(input: any = {}) {
 		await service.manage(ctx, "set", { targetId, count: 3, ...input });
 	}
-	async function startAndApprove() {
+	async function start() {
 		await service.manage(ctx, "on");
-		const prompt = sent.at(-1)!;
-		const click = button("yes", prompt);
-		await service.handleButton(click);
-		return { prompt, click };
 	}
 	async function restart() { await service.close(); store = new MentionReminderStore(file); service = new MentionReminderService(client, store, scheduler.schedule); }
 	async function dispose() { await service.close().catch(() => undefined); await fs.rm(directory, { recursive: true, force: true }); }
 	return { directory, file, guildId, channelId, targetId, callerId, otherId, botId, guild, caller, target, bot, channel, messages, sent, replies, ctx,
-		scheduler, button, configure, startAndApprove, restart, dispose,
+		scheduler, button, configure, start, restart, dispose,
 		setGate: (gate: Promise<void> | undefined, signal?: () => void) => { sendGate = gate; onBlockedSend = signal; },
 		setDeleteFailure: (ids: string[]) => { deleteFailure = new Set(ids); },
 		get store() { return store; }, get service() { return service; } };
 }
 
-test("configuration uses bounded defaults and won't ping until the selected person consents", async () => {
+test("configuration defaults to 100 and starts directly with only the chosen user pinged", async () => {
 	const f = await fixture();
 	try {
 		await f.configure({ count: undefined, text: "Nhắc nhé @everyone <@600000000000000006>" });
 		const record = await f.store.get(f.guildId);
 		assert.equal(record?.config?.intervalSeconds, DEFAULT_INTERVAL_SECONDS);
-		assert.equal(record?.config?.count, 10);
+		assert.equal(record?.config?.count, 100);
 		assert.equal(f.sent.length, 0, "/set does not send anything");
-		await f.service.manage(f.ctx, "on");
-		assert.equal(f.sent.length, 1);
-		assert.deepEqual(f.sent[0].payload.allowedMentions, { parse: [], users: [] }, "The approval request never pings");
-		assert.equal(f.scheduler.count(0), 0, "No run before consent");
-		const impostor = f.button("yes", f.sent[0], f.otherId);
-		await f.service.handleButton(impostor);
-		assert.match(impostor.response, /Chỉ người được chọn/);
-		assert.equal(f.scheduler.count(0), 0);
-		const click = f.button("yes", f.sent[0]);
-		await f.service.handleButton(click);
-		assert.equal(click.flags, MessageFlags.Ephemeral);
-		assert.match(click.response, /đồng ý/);
+		await f.start();
+		assert.match(f.replies.at(-1).content, /Đã bắt đầu/);
+		assert.equal(f.sent.length, 0, "No consent prompt is sent");
+		assert.equal(f.scheduler.count(0), 1, "/on immediately schedules the first ping without a button press");
 		assert.equal(await f.scheduler.fire(0), true);
-		assert.equal(f.sent.length, 2);
-		assert.deepEqual(f.sent[1].payload.allowedMentions, { parse: [], users: [f.targetId], repliedUser: false });
-		assert.match(f.sent[1].payload.content, new RegExp(`<@${f.targetId}>`));
+		assert.equal(f.sent.length, 1);
+		assert.deepEqual(f.sent[0].payload.allowedMentions, { parse: [], users: [f.targetId], repliedUser: false });
+		assert.match(f.sent[0].payload.content, new RegExp(`<@${f.targetId}>`));
+		assert.ok(f.button("stop", f.sent[0]));
 		assert.equal(f.scheduler.count(30_000), 1);
 	} finally { await f.dispose(); }
 });
@@ -143,58 +132,129 @@ test("runs a bounded count on a single timer and stops automatically", async () 
 	const f = await fixture();
 	try {
 		await f.configure({ count: 3, intervalSeconds: 10 });
-		await f.startAndApprove();
+		await f.start();
 		assert.equal(await f.scheduler.fire(0), true);
 		assert.equal(await f.scheduler.fire(10_000), true);
 		assert.equal(await f.scheduler.fire(10_000), true);
-		assert.equal(f.sent.length, 4, "One non-pinging approval plus exactly three mentions");
+		assert.equal(f.sent.length, 3, "Exactly three mentions and no consent prompt");
 		assert.equal(f.scheduler.count(10_000), 0);
 		await f.service.manage(f.ctx, "status");
 		assert.match(f.replies.at(-1).content, /Đang dừng/);
-		assert.equal((await f.store.get(f.guildId))?.messages.length, 4);
+		assert.equal((await f.store.get(f.guildId))?.messages.length, 3);
 	} finally { await f.dispose(); }
 });
 
-test("the target can refuse or stop without being an administrator", async () => {
+test("a custom 100-message run ends automatically and retains cleanup references", async () => {
+	const f = await fixture();
+	try {
+		await f.configure({ count: 100, intervalSeconds: 5 });
+		await f.start();
+		assert.equal(await f.scheduler.fire(0), true);
+		for (let i = 1; i < 100; i++) assert.equal(await f.scheduler.fire(5_000), true);
+		assert.equal(f.sent.length, 100);
+		assert.equal((await f.store.get(f.guildId))?.messages.length, 100);
+		assert.equal(f.scheduler.count(5_000), 0);
+		await f.service.manage(f.ctx, "status");
+		assert.match(f.replies.at(-1).content, /Đang dừng/);
+		assert.ok(f.sent.every(({ payload }) => payload.allowedMentions.users.length === 1 && payload.allowedMentions.users[0] === f.targetId));
+	} finally { await f.dispose(); }
+});
+
+test("custom maximum interval is converted to milliseconds without a hidden fixed time", async () => {
+	const f = await fixture();
+	try {
+		await f.configure({ count: 2, intervalSeconds: 100 });
+		assert.equal((await f.store.get(f.guildId))?.config?.intervalSeconds, 100);
+		await f.start(); await f.scheduler.fire(0);
+		assert.equal(f.scheduler.count(100_000), 1);
+		assert.equal(await f.scheduler.fire(100_000), true);
+		assert.equal(f.sent.length, 2);
+	} finally { await f.dispose(); }
+});
+
+test("configurations saved by version 1.3 remain usable after upgrade", async () => {
+	const f = await fixture();
+	try {
+		await f.service.close();
+		await fs.writeFile(f.file, JSON.stringify([{ guildId: f.guildId,
+			config: { guildId: f.guildId, channelId: f.channelId, targetId: f.targetId, intervalSeconds: 45, count: 10, text: "Cũ" },
+			messages: [] }]));
+		const store = new MentionReminderStore(f.file);
+		const service = new MentionReminderService({ user: { id: f.botId } } as any, store, f.scheduler.schedule);
+		try {
+			assert.equal((await store.get(f.guildId))?.config?.count, 10);
+			await service.manage(f.ctx, "on"); await f.scheduler.fire(0);
+			assert.equal(f.sent.length, 1);
+			assert.equal(f.scheduler.count(45_000), 1);
+		} finally { await service.close(); }
+	} finally { await f.dispose(); }
+});
+
+test("legacy intervals above 100 seconds load safely but require reconfiguration before starting", async () => {
+	const f = await fixture();
+	try {
+		await f.service.close();
+		await fs.writeFile(f.file, JSON.stringify([{ guildId: f.guildId,
+			config: { guildId: f.guildId, channelId: f.channelId, targetId: f.targetId, intervalSeconds: 3600, count: 10, text: "Cũ" },
+			messages: [{ channelId: f.channelId, messageId: "older-message" }] }]));
+		const store = new MentionReminderStore(f.file);
+		const service = new MentionReminderService({ user: { id: f.botId } } as any, store, f.scheduler.schedule);
+		try {
+			assert.equal((await store.get(f.guildId))?.config?.intervalSeconds, 3600, "Preserve the old value");
+			await service.manage(f.ctx, "on");
+			assert.match(f.replies.at(-1).content, /đặt lại từ 5 đến 100 giây/);
+			assert.equal(f.scheduler.count(0), 0);
+			assert.equal(f.sent.length, 0);
+			await service.manage(f.ctx, "set", { targetId: f.targetId, intervalSeconds: 100, count: 1 });
+			await service.manage(f.ctx, "on"); await f.scheduler.fire(0);
+			assert.equal(f.sent.length, 1);
+			assert.equal((await store.get(f.guildId))?.messages.length, 2, "Old cleanup references remain");
+		} finally { await service.close(); }
+	} finally { await f.dispose(); }
+});
+
+test("a failed start acknowledgement cancels its scheduled run", async () => {
 	const f = await fixture();
 	try {
 		await f.configure();
-		await f.service.manage(f.ctx, "on");
-		const refuse = f.button("no", f.sent.at(-1)!);
-		await f.service.handleButton(refuse);
-		assert.match(refuse.response, /Đã từ chối/);
+		const originalReply = f.ctx.reply;
+		let first = true;
+		f.ctx.reply = async (payload: any) => { if (first) { first = false; throw new Error("reply failed"); } await originalReply(payload); };
+		await f.start();
+		assert.match(f.replies.at(-1).content, /Không thể xử lý/);
 		assert.equal(f.scheduler.count(0), 0);
-		await f.service.manage(f.ctx, "on");
-		const approve = f.button("yes", f.sent.at(-1)!);
-		await f.service.handleButton(approve);
-		await f.scheduler.fire(0);
+		assert.equal(f.sent.length, 0);
+	} finally { await f.dispose(); }
+});
+
+test("the target can stop without being an administrator but a stranger cannot", async () => {
+	const f = await fixture();
+	try {
+		await f.configure(); await f.start(); await f.scheduler.fire(0);
 		const firstPing = f.sent.at(-1)!;
 		const stranger = f.button("stop", firstPing, f.otherId);
 		await f.service.handleButton(stranger);
 		assert.match(stranger.response, /Chỉ người nhận/);
 		const stop = f.button("stop", firstPing);
 		await f.service.handleButton(stop);
+		assert.equal(stop.flags, MessageFlags.Ephemeral);
 		assert.match(stop.response, /Đã dừng tag/);
 		assert.equal(f.scheduler.count(30_000), 0);
 	} finally { await f.dispose(); }
 });
 
-test("/off cancels pending consent and /delete stops the run but retains cleanup references", async () => {
+test("/off cancels an immediate run and /delete stops the run but retains cleanup references", async () => {
 	const f = await fixture();
 	try {
-		await f.configure();
-		await f.service.manage(f.ctx, "on");
-		const oldPrompt = f.sent.at(-1)!;
+		await f.configure(); await f.start();
 		await f.service.manage(f.ctx, "off");
-		const oldClick = f.button("yes", oldPrompt);
-		await f.service.handleButton(oldClick);
-		assert.match(oldClick.response, /hết hạn/);
-		await f.startAndApprove();
-		await f.scheduler.fire(0);
+		assert.equal(f.scheduler.count(0), 0);
+		assert.equal(f.sent.length, 0);
+		await f.start(); await f.scheduler.fire(0);
 		await f.service.manage(f.ctx, "delete");
 		assert.match(f.replies.at(-1).content, /Đã dừng và xóa cấu hình/);
 		assert.equal((await f.store.get(f.guildId))?.config, null);
-		assert.equal((await f.store.get(f.guildId))?.messages.length, 3);
+		assert.equal((await f.store.get(f.guildId))?.messages.length, 1);
 		assert.equal(f.scheduler.count(30_000), 0);
 		await f.service.manage(f.ctx, "clear");
 		assert.equal(f.messages.size, 0);
@@ -205,13 +265,13 @@ test("/off cancels pending consent and /delete stops the run but retains cleanup
 test("cleanup deletes only tracked messages authored by this bot, retaining failures", async () => {
 	const f = await fixture();
 	try {
-		await f.configure(); await f.startAndApprove(); await f.scheduler.fire(0);
+		await f.configure(); await f.start(); await f.scheduler.fire(0);
 		const refs = (await f.store.get(f.guildId))!.messages;
 		const otherId = "888888888888888888";
 		let otherDeleted = false;
 		f.messages.set(otherId, { id: otherId, author: { id: f.otherId }, async delete() { otherDeleted = true; } });
 		await f.store.addMessage(f.guildId, { channelId: f.channelId, messageId: otherId });
-		f.setDeleteFailure([refs[1].messageId]);
+		f.setDeleteFailure([refs[0].messageId]);
 		await f.service.manage(f.ctx, "clear");
 		assert.equal(otherDeleted, false);
 		assert.match(f.replies.at(-1).content, /Còn 2 tin chưa dọn/);
@@ -223,37 +283,40 @@ test("cleanup deletes only tracked messages authored by this bot, retaining fail
 	} finally { await f.dispose(); }
 });
 
-test("restart does not resume active reminders or accept an old consent button", async () => {
+test("restart does not resume active reminders but preserves config and tracked messages", async () => {
 	const f = await fixture();
 	try {
-		await f.configure(); await f.startAndApprove(); await f.scheduler.fire(0);
+		await f.configure(); await f.start(); await f.scheduler.fire(0);
 		assert.equal(f.scheduler.count(30_000), 1);
 		await f.restart();
 		assert.equal(f.scheduler.count(30_000), 0);
 		await f.service.manage(f.ctx, "status");
 		assert.match(f.replies.at(-1).content, /Đang dừng/);
 		assert.ok((await f.store.get(f.guildId))?.config);
+		assert.equal((await f.store.get(f.guildId))?.messages.length, 1);
 	} finally { await f.dispose(); }
 });
 
-test("pending approval expires and can never send a mention", async () => {
+test("legacy consent buttons from an older deployment are inert", async () => {
 	const f = await fixture();
 	try {
-		await f.configure(); await f.service.manage(f.ctx, "on");
-		const prompt = f.sent.at(-1)!;
-		await f.scheduler.fire(120_000);
-		const click = f.button("yes", prompt);
-		await f.service.handleButton(click);
-		assert.match(click.response, /hết hạn/);
+		await f.configure();
+		for (const action of ["yes", "no"]) {
+			const click: any = { guildId: f.guildId, customId: `tagremind:${action}:00000000-0000-4000-8000-000000000000`,
+				response: "", flags: undefined, async reply(payload: any) { this.response = payload.content; this.flags = payload.flags; } };
+			await f.service.handleButton(click);
+			assert.match(click.response, /hết hiệu lực/);
+			assert.equal(click.flags, MessageFlags.Ephemeral);
+		}
 		assert.equal(f.scheduler.count(0), 0);
-		assert.equal(f.sent.length, 1);
+		assert.equal(f.sent.length, 0);
 	} finally { await f.dispose(); }
 });
 
 test("invalid frequencies, unprivileged callers, inaccessible channels and bot targets are rejected", async () => {
 	const invalid = await fixture();
 	try {
-		for (const input of [{ intervalSeconds: 1 }, { count: 11 }, { text: "x".repeat(201) }]) {
+		for (const input of [{ intervalSeconds: 4 }, { intervalSeconds: 101 }, { count: 0 }, { count: 101 }, { text: "x".repeat(201) }]) {
 			await invalid.configure(input);
 			assert.match(invalid.replies.at(-1).content, /❌/);
 		}
@@ -284,7 +347,7 @@ test("a full message ledger refuses new runs instead of forgetting messages", as
 	const f = await fixture();
 	try {
 		await f.configure({ count: 2 });
-		for (let i = 0; i < MAX_TRACKED_REMINDER_MESSAGES - 2; i++) await f.store.addMessage(f.guildId, { channelId: f.channelId, messageId: `tracked-${i}` });
+		for (let i = 0; i < MAX_TRACKED_REMINDER_MESSAGES - 1; i++) await f.store.addMessage(f.guildId, { channelId: f.channelId, messageId: `tracked-${i}` });
 		await f.service.manage(f.ctx, "on");
 		assert.match(f.replies.at(-1).content, /danh sách tin bot đã đầy/i);
 		assert.equal(f.sent.length, 0);
@@ -303,7 +366,7 @@ test("/off waits for an in-flight Discord send and prevents any later tick", asy
 	const gate = new Promise<void>((resolve) => { release = resolve; });
 	const inSend = new Promise<void>((resolve) => { entered = resolve; });
 	try {
-		await f.configure(); await f.startAndApprove();
+		await f.configure(); await f.start();
 		f.setGate(gate, entered);
 		const tick = f.scheduler.fire(0);
 		await inSend;
@@ -313,13 +376,13 @@ test("/off waits for an in-flight Discord send and prevents any later tick", asy
 		assert.equal(offFinished, false, "Stop acknowledges only after the outstanding Discord request resolves");
 		release(); await tick; await off;
 		assert.equal(offFinished, true);
-		assert.equal(f.sent.length, 2, "The already-submitted send may complete, but no new send is scheduled");
+		assert.equal(f.sent.length, 1, "The already-submitted send may complete, but no new send is scheduled");
 		assert.equal(f.scheduler.count(30_000), 0);
-		assert.equal((await f.store.get(f.guildId))?.messages.length, 2);
+		assert.equal((await f.store.get(f.guildId))?.messages.length, 1);
 	} finally { release(); await f.dispose(); }
 });
 
-test("concurrent requests reserve slots before network work, limiting the bot to four guilds", async () => {
+test("concurrent starts reserve slots before network work, limiting the bot to four guilds", async () => {
 	const fixtures = await Promise.all(Array.from({ length: 5 }, () => fixture()));
 	const first = fixtures[0];
 	const shared = new MentionReminderService({ user: { id: first.botId } } as any, first.store, first.scheduler.schedule);
@@ -334,12 +397,17 @@ test("concurrent requests reserve slots before network work, limiting the bot to
 		const waits: Promise<void>[] = [];
 		const requests: Promise<void>[] = [];
 		for (let i = 0; i < 4; i++) {
+			const f = fixtures[i];
 			let release!: () => void, entered!: () => void;
 			const gate = new Promise<void>((resolve) => { release = resolve; });
 			const wait = new Promise<void>((resolve) => { entered = resolve; });
 			releases.push(release); waits.push(wait);
-			fixtures[i].setGate(gate, entered);
-			requests.push(shared.manage(fixtures[i].ctx, "on"));
+			const originalFetch = f.guild.members.fetch;
+			f.guild.members.fetch = async (input: any) => {
+				if (input.user === f.targetId) { entered(); await gate; }
+				return originalFetch(input);
+			};
+			requests.push(shared.manage(f.ctx, "on"));
 		}
 		await Promise.all(waits);
 		await shared.manage(fixtures[4].ctx, "on");
@@ -347,7 +415,8 @@ test("concurrent requests reserve slots before network work, limiting the bot to
 		assert.equal(fixtures[4].sent.length, 0);
 		for (const release of releases) release();
 		await Promise.all(requests);
-		assert.ok(fixtures.slice(0, 4).every((f) => f.sent.length === 1));
+		assert.ok(fixtures.slice(0, 4).every((f) => /Đã bắt đầu/.test(f.replies.at(-1).content)));
+		assert.equal(first.scheduler.count(0), 4);
 	} finally {
 		for (const release of releases) release();
 		await shared.close();
@@ -371,14 +440,34 @@ test("store serializes concurrent guild changes and keeps separate configuration
 test("a new run cannot bypass the minimum gap by being restarted immediately", async () => {
 	const f = await fixture();
 	try {
-		await f.configure({ count: 1, intervalSeconds: 10 });
-		await f.startAndApprove(); await f.scheduler.fire(0);
-		await f.startAndApprove();
+		await f.configure({ count: 1, intervalSeconds: 5 });
+		await f.start(); await f.scheduler.fire(0);
+		await f.start();
 		const pending = f.scheduler.tasks.filter((task) => !task.cancelled && task.delay < 120_000);
 		assert.equal(pending.length, 1);
-		assert.ok(pending[0].delay > 0 && pending[0].delay <= 10_000, "New run waits until ten seconds have elapsed");
-		assert.equal(f.sent.length, 3, "Two requests, but only the first run has pinged");
+		assert.ok(pending[0].delay > 0 && pending[0].delay <= 5_000, "New run waits until five seconds have elapsed");
+		assert.equal(f.sent.length, 1, "Only the first run has pinged");
 	} finally { await f.dispose(); }
+});
+
+test("closing during target validation prevents a late start", async () => {
+	const f = await fixture();
+	let release!: () => void, entered!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	const started = new Promise<void>((resolve) => { entered = resolve; });
+	try {
+		await f.configure();
+		const originalFetch = f.guild.members.fetch;
+		f.guild.members.fetch = async (input: any) => {
+			if (input.user === f.targetId) { entered(); await gate; }
+			return originalFetch(input);
+		};
+		const on = f.start(); await started;
+		const closing = f.service.close();
+		release(); await Promise.all([on, closing]);
+		assert.equal(f.sent.length, 0);
+		assert.equal(f.scheduler.count(0), 0);
+	} finally { release(); await f.dispose(); }
 });
 
 test("slash inputs and reminder buttons route with private acknowledgements", async () => {
@@ -410,30 +499,26 @@ test("slash inputs and reminder buttons route with private acknowledgements", as
 	assert.deepEqual(buttonCalls, [button]);
 });
 
-test("the approval message becomes a stop button before the first mention", async () => {
+test("a manager can stop an immediately scheduled run before the first mention", async () => {
 	const f = await fixture();
 	try {
-		await f.configure();
-		const { prompt } = await f.startAndApprove();
-		assert.deepEqual(prompt.payload.allowedMentions, { parse: [], users: [] });
-		const stop = f.button("stop", prompt);
-		await f.service.handleButton(stop);
-		assert.match(stop.response, /Đã dừng tag/);
+		await f.configure(); await f.start();
+		assert.equal(f.scheduler.count(0), 1);
+		await f.service.manage(f.ctx, "off");
 		assert.equal(f.scheduler.count(0), 0);
-		assert.equal(f.sent.length, 1, "No mention was sent");
+		assert.equal(f.sent.length, 0);
 	} finally { await f.dispose(); }
 });
 
-test("a pending consent request cannot be accepted after a restart", async () => {
+test("a stale stop button from a previous run cannot stop a later run", async () => {
 	const f = await fixture();
 	try {
-		await f.configure(); await f.service.manage(f.ctx, "on");
-		const oldClick = f.button("yes", f.sent.at(-1)!);
-		await f.restart();
-		await f.service.handleButton(oldClick);
-		assert.match(oldClick.response, /hết hạn/);
-		assert.equal(f.scheduler.count(0), 0);
-		assert.equal(f.sent.length, 1);
+		await f.configure({ count: 1 }); await f.start(); await f.scheduler.fire(0);
+		const old = f.button("stop", f.sent[0]);
+		await f.start();
+		await f.service.handleButton(old);
+		assert.match(old.response, /đã dừng/);
+		assert.equal(f.scheduler.tasks.filter((task) => !task.cancelled).length, 1);
 	} finally { await f.dispose(); }
 });
 
@@ -456,14 +541,12 @@ test("a later /off cannot overtake a slow /on during its permission lookup", asy
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.equal(offFinished, false, "The later stop waits behind the earlier start");
 		release(); await Promise.all([on, off]);
-		assert.equal(f.sent.length, 1);
-		const click = f.button("yes", f.sent[0]); await f.service.handleButton(click);
-		assert.match(click.response, /hết hạn/);
+		assert.equal(f.sent.length, 0);
 		assert.equal(f.scheduler.count(0), 0);
 	} finally { release(); await f.dispose(); }
 });
 
-test("real discord.js objects serialize the consent, mention and cleanup REST payloads offline", async () => {
+test("real discord.js objects serialize immediate mention and cleanup REST payloads offline", async () => {
 	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "dtrx-discordjs-reminder-"));
 	const ids = { guild: "100000000000000001", channel: "200000000000000002", target: "300000000000000003",
 		admin: "400000000000000004", bot: "500000000000000005", role: "600000000000000006" };
@@ -514,36 +597,28 @@ test("real discord.js objects serialize the consent, mention and cleanup REST pa
 		await service.manage(ctx, "set", { targetId: ids.target, count: 2, text: "@everyone" });
 		assert.match(replies.at(-1).content, /Đã lưu/);
 		await service.manage(ctx, "on");
-		const prompt = calls.find((call) => call.method === "POST")!;
-		assert.deepEqual(prompt.body.allowed_mentions, { parse: [], users: [] });
-		const customId = prompt.body.components[0].components[0].custom_id;
-		const promptMessage = guild.channels.cache.get(ids.channel).messages.cache.first();
-		const click: any = { guildId: ids.guild, customId, user: { id: ids.target }, message: promptMessage,
-			memberPermissions: new PermissionsBitField(0n), async deferReply() {}, async editReply() {} };
-		await service.handleButton(click);
-		const patch = calls.find((call) => call.method === "PATCH")!;
-		assert.deepEqual(patch.body.allowed_mentions, { parse: [], users: [] });
-		assert.match(patch.body.components[0].components[0].custom_id, /^tagremind:stop:/);
+		assert.equal(calls.filter((call) => call.method === "POST").length, 0, "No consent prompt is posted");
 		await timer.fire(0);
-		const ping = calls.filter((call) => call.method === "POST")[1];
+		const ping = calls.find((call) => call.method === "POST")!;
 		assert.deepEqual(ping.body.allowed_mentions, { parse: [], users: [ids.target], replied_user: false });
+		assert.match(ping.body.components[0].components[0].custom_id, /^tagremind:stop:/);
 		await service.manage(ctx, "clear");
 		assert.equal(messages.size, 0);
-		assert.equal(calls.filter((call) => call.method === "DELETE").length, 2);
-		assert.match(replies.at(-1).content, /Đã dọn 2 tin/);
+		assert.equal(calls.filter((call) => call.method === "DELETE").length, 1);
+		assert.match(replies.at(-1).content, /Đã dọn 1 tin/);
 	} finally { await service.close(); await client.destroy(); await fs.rm(directory, { recursive: true, force: true }); }
 });
 
 test("cleanup cannot delete messages from a channel the manager cannot view", async () => {
 	const f = await fixture();
 	try {
-		await f.configure(); await f.startAndApprove(); await f.scheduler.fire(0);
+		await f.configure(); await f.start(); await f.scheduler.fire(0);
 		const permissionsFor = f.channel.permissionsFor;
 		f.channel.permissionsFor = (member: any) => member.id === f.callerId ? new PermissionsBitField(0n) : permissionsFor(member);
 		await f.service.manage(f.ctx, "clear");
-		assert.equal(f.messages.size, 2);
-		assert.equal((await f.store.get(f.guildId))?.messages.length, 2);
-		assert.match(f.replies.at(-1).content, /Còn 2 tin chưa dọn/);
+		assert.equal(f.messages.size, 1);
+		assert.equal((await f.store.get(f.guildId))?.messages.length, 1);
+		assert.match(f.replies.at(-1).content, /Còn 1 tin chưa dọn/);
 	} finally { await f.dispose(); }
 });
 
