@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-export const MIN_INTERVAL_SECONDS = 5;
+export const MIN_INTERVAL_SECONDS = 1;
 export const MAX_INTERVAL_SECONDS = 100;
 // Versions through 1.3.0 accepted longer intervals; load those records without silently changing them.
 const LEGACY_MAX_INTERVAL_SECONDS = 3600;

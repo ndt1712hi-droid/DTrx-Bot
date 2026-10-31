@@ -1,4 +1,4 @@
-export declare const MIN_INTERVAL_SECONDS = 5;
+export declare const MIN_INTERVAL_SECONDS = 1;
 export declare const MAX_INTERVAL_SECONDS = 100;
 export declare const DEFAULT_INTERVAL_SECONDS = 30;
 export declare const MAX_REMINDERS_PER_RUN = 100;

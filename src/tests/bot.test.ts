@@ -207,12 +207,12 @@ test("Slash command definitions build all 33 commands cleanly", () => {
 		assert.equal(command?.default_member_permissions, "32", "Greeting configuration requires Manage Server by default");
 	}
 	const spam = commands.find((command) => command.name === "spam");
-	assert.equal(spam?.default_member_permissions, PermissionFlagsBits.ManageGuild.toString());
+	assert.equal(spam?.default_member_permissions, null, "Recipients need to see /spam off; privileged actions remain checked in the handler");
 	assert.deepEqual(spam?.options?.map((option) => option.name), ["set", "on", "off", "delete", "clear", "status"]);
 	const setReminder = spam?.options?.find((option) => option.name === "set") as { options?: { name: string; required?: boolean; min_value?: number; max_value?: number }[] } | undefined;
 	assert.deepEqual(setReminder?.options?.map((option) => option.name), ["user", "channel", "interval", "count", "message"]);
 	assert.equal(setReminder?.options?.find((option) => option.name === "user")?.required, true);
-	assert.deepEqual([setReminder?.options?.find((option) => option.name === "interval")?.min_value, setReminder?.options?.find((option) => option.name === "interval")?.max_value], [5, 100]);
+	assert.deepEqual([setReminder?.options?.find((option) => option.name === "interval")?.min_value, setReminder?.options?.find((option) => option.name === "interval")?.max_value], [1, 100]);
 	assert.deepEqual([setReminder?.options?.find((option) => option.name === "count")?.min_value, setReminder?.options?.find((option) => option.name === "count")?.max_value], [1, 100]);
 	for (const name of ["lock", "unlock"]) {
 		const command = commands.find((entry) => entry.name === name);

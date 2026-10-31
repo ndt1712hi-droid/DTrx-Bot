@@ -1,8 +1,4 @@
-import { randomUUID } from "node:crypto";
 import {
-	ActionRowBuilder,
-	ButtonBuilder,
-	ButtonStyle,
 	ChannelType,
 	MessageFlags,
 	PermissionFlagsBits,
@@ -41,7 +37,6 @@ const defaultSchedule: Schedule = (task, milliseconds) => {
 	return () => clearTimeout(handle);
 };
 interface ActiveRun {
-	token: string;
 	guild: Guild;
 	config: MentionReminderConfig;
 	requesterId: string;
@@ -51,11 +46,6 @@ interface ActiveRun {
 	inFlight?: Promise<void>;
 }
 
-function buttonRow(token: string): ActionRowBuilder<ButtonBuilder> {
-	return new ActionRowBuilder<ButtonBuilder>().addComponents(
-		new ButtonBuilder().setCustomId(`${BUTTON_PREFIX}stop:${token}`).setLabel("Dừng tag").setStyle(ButtonStyle.Danger),
-	);
-}
 function isUnknownMessage(err: unknown): boolean {
 	return Boolean(err && typeof err === "object" && "code" in err && (err as { code?: unknown }).code === 10008);
 }
@@ -98,6 +88,14 @@ export class MentionReminderService {
 		// Queue before any network fetch so a later /off cannot overtake a slow /on.
 		await this.queue(ctx.guild.id, async () => {
 			if (this.closed) { await ctx.reply({ content: "❌ Chức năng nhắc tag đang đóng.", ephemeral: true }); return; }
+			// The selected recipient and initiator can stop their own active run even without
+			// Manage Server. Every other management operation still requires that permission.
+			const running = this.active.get(ctx.guild.id);
+			if (mode === "off" && running && (running.config.targetId === ctx.userId || running.requesterId === ctx.userId)) {
+				await this.stop(ctx.guild.id);
+				await ctx.reply({ content: "🛑 Đã dừng nhắc tag; cấu hình vẫn được giữ.", ephemeral: true });
+				return;
+			}
 			const caller = await ctx.guild.members.fetch({ user: ctx.userId, force: true }).catch(() => null);
 			if (!caller || (ctx.guild.ownerId !== ctx.userId && !caller.permissions.has(PermissionFlagsBits.ManageGuild))) {
 				await ctx.reply({ content: "❌ Bạn cần quyền **Quản lý máy chủ (Manage Server)** để quản lý nhắc tag.", ephemeral: true });
@@ -145,7 +143,7 @@ export class MentionReminderService {
 			guild.members.fetchMe({ force: true }).catch(() => null),
 		]);
 		if (!target || target.user.bot) return { error: "❌ Hãy chọn một thành viên thật đang có mặt trong server." };
-		if (!channel.permissionsFor(target)?.has(PermissionFlagsBits.ViewChannel)) return { error: "❌ Người được chọn không xem được kênh để nhận tin và dùng nút dừng." };
+		if (!channel.permissionsFor(target)?.has(PermissionFlagsBits.ViewChannel)) return { error: "❌ Người được chọn không xem được kênh để nhận tin và dùng lệnh dừng." };
 		if (!bot || !channel.permissionsFor(bot)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages])) {
 			return { error: "❌ Bot cần quyền **Xem kênh** và **Gửi tin nhắn** trong kênh đã chọn." };
 		}
@@ -193,7 +191,7 @@ export class MentionReminderService {
 			if ("error" in validated) { await ctx.reply({ content: validated.error, ephemeral: true }); return; }
 			if (this.closed) { await ctx.reply({ content: "❌ Chức năng nhắc tag đang đóng.", ephemeral: true }); return; }
 			const run: ActiveRun = {
-				token: randomUUID(), guild: ctx.guild, config: { ...record.config }, requesterId: ctx.userId,
+				guild: ctx.guild, config: { ...record.config }, requesterId: ctx.userId,
 				sent: 0, cancelled: false,
 			};
 			const previousSend = this.lastSent.get(ctx.guild.id) ?? 0;
@@ -203,7 +201,7 @@ export class MentionReminderService {
 			this.active.set(ctx.guild.id, run);
 			try {
 				this.scheduleTick(run, delay);
-				await ctx.reply({ content: `✅ Đã bắt đầu tag trong <#${run.config.channelId}>: tối đa ${run.config.count} lần, cách nhau ${run.config.intervalSeconds} giây. Dùng \`/spam off\` hoặc nút **Dừng tag** để dừng.`, ephemeral: true });
+				await ctx.reply({ content: `✅ Đã bắt đầu tag trong <#${run.config.channelId}>: tối đa ${run.config.count} lần, cách nhau ${run.config.intervalSeconds} giây. Dùng \`/spam off\` để dừng.`, ephemeral: true });
 			} catch (err) {
 				await this.stop(ctx.guild.id);
 				throw err;
@@ -214,22 +212,8 @@ export class MentionReminderService {
 	}
 
 	async handleButton(interaction: ButtonInteraction): Promise<void> {
-		const guildId = interaction.guildId;
-		const match = /^tagremind:(yes|no|stop):([a-f0-9-]{36})$/.exec(interaction.customId);
-		if (!guildId || !match || this.closed || match[1] !== "stop") {
-			// Old consent buttons from previous releases are deliberately inert after an upgrade.
-			await interaction.reply({ content: "ℹ️ Nút này đã hết hiệu lực.", flags: MessageFlags.Ephemeral }); return;
-		}
-		await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-		await this.queue(guildId, async () => {
-			const run = this.active.get(guildId);
-			if (!run || run.token !== match[2]) { await interaction.editReply({ content: "ℹ️ Đợt tag này đã dừng." }); return; }
-			if (interaction.user.id !== run.config.targetId && interaction.user.id !== run.requesterId && !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-				await interaction.editReply({ content: "❌ Chỉ người nhận, người bắt đầu hoặc quản trị viên có thể dừng đợt này." }); return;
-			}
-			await this.stop(guildId);
-			await interaction.editReply({ content: "🛑 Đã dừng tag." });
-		});
+		// Messages from old versions can still show a button, but only the slash command stops a run.
+		await interaction.reply({ content: "ℹ️ Nút cũ không còn hiệu lực. Dùng `/spam off` để dừng.", flags: MessageFlags.Ephemeral });
 	}
 
 	private scheduleTick(run: ActiveRun, delayMs: number): void {
@@ -253,7 +237,6 @@ export class MentionReminderService {
 			const message = await channel.send({
 				content: `<@${run.config.targetId}> ${run.config.text}`,
 				allowedMentions: { parse: [], users: [run.config.targetId], repliedUser: false },
-				components: [buttonRow(run.token)],
 			});
 			const now = Date.now();
 			for (const [id, sentAt] of this.lastSent) if (now - sentAt >= MIN_INTERVAL_SECONDS * 1000) this.lastSent.delete(id);
