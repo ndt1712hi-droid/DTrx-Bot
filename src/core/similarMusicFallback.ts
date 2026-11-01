@@ -184,7 +184,7 @@ function bounded<T>(
 }
 
 /** Check that data arrives without consuming the first chunk needed by the player. */
-function firstBytesReady(stream: Readable, milliseconds: number, signal?: AbortSignal): Promise<void> {
+export function firstBytesReady(stream: Readable, milliseconds: number, signal?: AbortSignal): Promise<void> {
 	return new Promise<void>((resolve, reject) => {
 		let finished = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;

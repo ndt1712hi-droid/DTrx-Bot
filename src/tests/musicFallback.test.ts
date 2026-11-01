@@ -320,3 +320,103 @@ test("failed SoundCloud initialization is handled, retried lazily, and retries a
 		assert.equal(failedCalls, 3, "A failed lazy retry is not repeated for every search");
 	} finally { SoundCloud.prototype.init = original; }
 });
+
+test("a YouTube stream that ends empty retries the exact same video through the alternate transport", async () => {
+	const failed = Readable.from([]);
+	const requested = track();
+	const plugin = new ResilientYouTubePlugin({ client: {} as any, fistStream: async () => ({ type: "arbitrary", stream: failed }) }, 5_000);
+	let retriedId: string | undefined;
+	(plugin as any).downloadWithYoutubei = async (same: Track, id: string) => {
+		assert.equal(same, requested);
+		retriedId = id;
+		return audio("original-video-audio");
+	};
+	const result = await plugin.getStream(requested);
+	assert.equal(retriedId, requested.id, "Retry the original video, not a replacement");
+	assert.equal(failed.destroyed, true);
+	assert.equal(await readAll(result.stream!), "original-video-audio");
+});
+
+test("a direct SoundCloud stream that ends before any data is rejected", async () => {
+	const plugin = new ResilientSoundCloudPlugin(5_000);
+	const empty = Readable.from([]);
+	(plugin as any).client.downloadTrack = async () => empty;
+	await assert.rejects(plugin.getStream(soundcloud("empty", "A song")), /data|stream|empty/i);
+	assert.equal(empty.destroyed, true);
+});
+
+test("healthy original YouTube and SoundCloud streams preserve their first bytes without retry", async () => {
+	const requested = track();
+	const yt = new ResilientYouTubePlugin({ client: {} as any, fistStream: async () => audio("first-and-rest") }, 5_000);
+	let retryCalls = 0;
+	(yt as any).downloadWithYoutubei = async () => { retryCalls++; return audio("should-not-play"); };
+	const original = await yt.getStream(requested);
+	assert.equal(await readAll(original.stream!), "first-and-rest");
+	assert.equal(retryCalls, 0);
+	const sc = new ResilientSoundCloudPlugin(5_000);
+	(sc as any).client.downloadTrack = async () => Readable.from([Buffer.from("sound"), Buffer.from("cloud")]);
+	const soundcloudInfo = await sc.getStream(soundcloud("healthy", "The song"));
+	assert.equal(await readAll(soundcloudInfo.stream!), "soundcloud");
+});
+
+test("hung original YouTube audio is bounded, closed, and retried with the same video", async () => {
+	const hung = new PassThrough();
+	const yt = new ResilientYouTubePlugin({ client: {} as any, fistStream: async () => ({ type: "arbitrary", stream: hung }) }, 1_000);
+	let id = "";
+	(yt as any).downloadWithYoutubei = async (_track: Track, videoId: string) => { id = videoId; return audio("retry audio"); };
+	const result = await yt.getStream(track());
+	assert.equal(id, "uhr_FBH4s2Q");
+	assert.equal(hung.destroyed, true);
+	assert.equal(await readAll(result.stream!), "retry audio");
+});
+
+test("aborting an original stream closes it without starting a YouTube retry", async () => {
+	const hung = new PassThrough();
+	const controller = new AbortController();
+	const yt = new ResilientYouTubePlugin({ client: {} as any, fistStream: async () => ({ type: "arbitrary", stream: hung }) }, 5_000);
+	let retries = 0;
+	(yt as any).downloadWithYoutubei = async () => { retries++; return audio("unexpected"); };
+	const result = yt.getStream(track(), controller.signal);
+	setTimeout(() => controller.abort(new Error("user cancelled")), 25);
+	await assert.rejects(result, /user cancelled/);
+	assert.equal(retries, 0);
+	assert.equal(hung.destroyed, true);
+});
+
+test("a timed-out alternate YouTube transport disposes a late stream", async () => {
+	const late = new PassThrough();
+	let retrySignal: AbortSignal | undefined;
+	const yt = new ResilientYouTubePlugin({ client: {} as any, fistStream: async () => ({ type: "arbitrary", stream: Readable.from([]) }) }, 1_000);
+	(yt as any).downloadWithYoutubei = async (_track: Track, _id: string, signal: AbortSignal) => {
+		retrySignal = signal;
+		await new Promise<void>((resolve) => setTimeout(resolve, 380));
+		return { type: "arbitrary", stream: late };
+	};
+	await assert.rejects(yt.getStream(track()), /timed out/i);
+	assert.equal(retrySignal?.aborted, true);
+	await new Promise<void>((resolve) => setTimeout(resolve, 180));
+	assert.equal(late.destroyed, true, "Even a transport that ignores abort must not leak the late stream");
+});
+
+test("when both original YouTube transports fail, the real plugin manager selects and discloses a similar song", async () => {
+	const requested = track();
+	const alternate = soundcloud("alt", "NGƯỢC LỐI YÊU - CHU THÚY QUỲNH & VICKY NHUNG");
+	const yt = new ResilientYouTubePlugin({ client: {} as any, fistStream: async () => ({ type: "arbitrary", stream: Readable.from([]) }) }, 5_000);
+	(yt as any).downloadWithYoutubei = async () => { throw new Error("video unavailable"); };
+	yt.search = async () => ({ tracks: [] });
+	const sc = new ResilientSoundCloudPlugin(5_000);
+	sc.search = async () => ({ tracks: [alternate] });
+	(sc as any).client.downloadTrack = async () => Readable.from([Buffer.from("alternate audio")]);
+	tracePluginStreams(yt); tracePluginStreams(sc);
+	const manager = new PluginManager({ extractorTimeout: 5_000, enableCache: false });
+	manager.register(yt); manager.register(sc);
+	const player: any = { pluginManager: manager };
+	installStreamProvenance(player);
+	try {
+		const result = await manager.getStream(requested);
+		assert.ok(result?.stream);
+		assert.equal(await readAll(result.stream), "alternate audio");
+		assert.equal(result.metadata?.title, alternate.title);
+		assert.equal(getPlaybackFallback(player, requested)?.id, alternate.id, "The alternative must not be presented as the original");
+	} finally { manager.destroy(); }
+});

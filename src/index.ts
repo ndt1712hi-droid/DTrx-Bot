@@ -173,11 +173,16 @@ export function createBotInstance(customEnv?: NodeJS.ProcessEnv, options: Create
 			console.warn("[Commands] Tự đăng ký lệnh đang TẮT (AUTO_DEPLOY_COMMANDS=false); bật lại hoặc chạy npm run deploy.");
 		}
 
-		engine.persistence.startPeriodicSave(engine.manager, 30_000);
-		await alwaysOnStartup;
-		const restored = await engine.restorePersistedSessions();
-		if (restored > 0) {
-			console.log(`🔄 Đã khôi phục ${restored} phiên phát nhạc từ lần chạy trước.`);
+		try {
+			await alwaysOnStartup;
+			const restored = await engine.restorePersistedSessions();
+			if (restored > 0) {
+				console.log(`🔄 Đã khôi phục ${restored} phiên phát nhạc từ lần chạy trước.`);
+			}
+		} catch (err) {
+			console.warn("[Persistence] Chưa thể khôi phục phiên nhạc; giữ nguyên tệp cũ:", err instanceof Error ? err.message : err);
+		} finally {
+			engine.startSessionSaving();
 		}
 	});
 

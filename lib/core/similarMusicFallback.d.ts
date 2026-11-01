@@ -1,8 +1,11 @@
+import type { Readable } from "node:stream";
 import type { SearchResult, StreamInfo, Track } from "ziplayer";
 /** Bounded search variants avoid over-specific video descriptions without changing URLs or track titles. */
 export declare function similarSearchQueries(title: string, artist?: string): string[];
 /** Conservative, accent-insensitive title matching. It is a heuristic, not proof of the same recording. */
 export declare function scoreSimilarMusic(requested: Track, candidate: Track): number;
+/** Check that data arrives without consuming the first chunk needed by the player. */
+export declare function firstBytesReady(stream: Readable, milliseconds: number, signal?: AbortSignal): Promise<void>;
 export interface SimilarFallbackOptions {
     requested: Track;
     source: string;

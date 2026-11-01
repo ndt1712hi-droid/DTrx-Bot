@@ -865,7 +865,7 @@ function fakeReadyConnection(channelId: string) {
 		const previous = connection.state.subscription;
 		const subscription = audioPlayer.subscribe(connection);
 		connection.state = { ...connection.state, subscription };
-		previous?.unsubscribe();
+		if (previous && previous !== subscription) previous.unsubscribe();
 		return subscription;
 	};
 	connection.onSubscriptionRemoved = (subscription: any) => {
@@ -1722,5 +1722,240 @@ test("play command distinguishes actual packet progress from zero volume and fai
 	} finally {
 		await engine.shutdown();
 		await client.destroy();
+	}
+});
+
+test("session restoration keeps the current song before its twenty queued songs", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-music-restore-order-"));
+	const { client, engine } = createBotInstance({
+		DISCORD_TOKEN: "dummy", ENABLE_PERSISTENCE: "true", PERSISTENCE_FILE: path.join(dir, "sessions.json"),
+		ENABLE_LYRICS: "false", LOW_PERFORMANCE: "true",
+	});
+	let player: any;
+	try {
+		const { room, guild } = mockVoiceRoom("guild-order", "voice-order");
+		room.members.set("human", { user: { bot: false } });
+		client.guilds.cache.set(guild.id, guild);
+		player = await engine.getOrCreatePlayer({ guildId: guild.id, voiceChannelId: room.id, textChannelId: "text" });
+		const pcm = createSampleWavBuffer(5_000, 48_000);
+		player.pluginManager.getRelatedTracks = async () => [];
+		player.pluginManager.getStream = async () => ({ type: "arbitrary", stream: Readable.from([pcm]) });
+		engine.ensureConnected = async (restored) => {
+			restored.connection = fakeReadyConnection(room.id);
+			(restored as any).connection.subscribe(restored.audioPlayer);
+		};
+		const tracks = Array.from({ length: 21 }, (_, index) => sampleTrack(index + 1));
+		engine.persistence.loadValidSessions = async () => [{
+			guildId: guild.id, voiceChannelId: room.id, textChannelId: "text", currentTrack: tracks[0],
+			upcomingTracks: tracks.slice(1), volume: 89, loopMode: "off", autoPlay: true, activeFilters: [], savedAt: Date.now(),
+		}];
+		engine.persistence.clearFile = async () => undefined;
+		assert.equal(await engine.restorePersistedSessions(), 1);
+		assert.equal(player.currentTrack?.id, tracks[0].id, "Restore the exact song that was playing first");
+		assert.deepEqual(player.upcomingTracks.map((t: Track) => t.id), tracks.slice(1).map((t) => t.id));
+		assert.equal(player.volume, 89);
+		const backup = JSON.parse(await fs.readFile(path.join(dir, "sessions.json.recovery.json"), "utf8"));
+		assert.equal(backup[0].currentTrack.id, tracks[0].id);
+		assert.equal(backup[0].upcomingTracks.length, 20, "Keep a manual recovery copy of the whole saved queue");
+	} finally {
+		if (player) {
+			await player.action({ type: "STOP" }).catch(() => undefined);
+			player.connection?.state.subscription?.unsubscribe();
+			player.connection = null;
+		}
+		await engine.shutdown({ saveSessions: false });
+		client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("slow startup and shutdown do not overwrite an unrestored music snapshot", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-music-restore-race-"));
+	const file = path.join(dir, "sessions.json");
+	const session = {
+		guildId: "guild-race", voiceChannelId: "voice-race", textChannelId: "text", currentTrack: sampleTrack(1),
+		upcomingTracks: Array.from({ length: 20 }, (_, index) => sampleTrack(index + 2)),
+		volume: 89, loopMode: "off" as const, autoPlay: true, activeFilters: [], savedAt: Date.now(),
+	};
+	const original = JSON.stringify([session], null, 2);
+	await fs.writeFile(file, original);
+	const { client, engine } = createBotInstance({ DISCORD_TOKEN: "dummy", ENABLE_PERSISTENCE: "true", PERSISTENCE_FILE: file });
+	let release: ((sessions: typeof session[]) => void) | undefined;
+	let signalStarted: () => void = () => undefined;
+	const started = new Promise<void>((resolve) => { signalStarted = resolve; });
+	try {
+		engine.persistence.loadValidSessions = async () => new Promise((resolve) => { release = resolve; signalStarted(); });
+		const restoring = engine.restorePersistedSessions();
+		await started;
+		assert.ok(release, "Restore must be waiting on the disk result");
+		engine.startSessionSaving();
+		assert.equal((engine.persistence as any).timer, null, "Periodic saves must not begin before restoration completes");
+		await engine.shutdown();
+		assert.equal(await fs.readFile(file, "utf8"), original, "Shutdown must not replace the saved queue with []");
+		release?.([session]);
+		await restoring;
+		engine.startSessionSaving();
+		assert.equal((engine.persistence as any).timer, null, "A stopped engine must not restart the timer");
+		assert.equal(await fs.readFile(file, "utf8"), original);
+		const backup = JSON.parse(await fs.readFile(`${file}.recovery.json`, "utf8"));
+		assert.equal(backup[0].upcomingTracks.length, 20);
+	} finally {
+		release?.([]);
+		await engine.shutdown({ saveSessions: false });
+		client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("subscription watchdog restores real audio packets without changing queue, pause, TTS, or forward mode", { timeout: 12_000 }, async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-music-watchdog-"));
+	const { client, engine } = createBotInstance({
+		DISCORD_TOKEN: "dummy", ENABLE_PERSISTENCE: "false", PERSISTENCE_FILE: path.join(dir, "sessions.json"),
+		ENABLE_LYRICS: "false", LOW_PERFORMANCE: "true",
+	});
+	let player: any;
+	const decoder = new OpusScript(48_000, 2, OpusScript.Application.AUDIO);
+	const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+	const waitUntil = async (predicate: () => boolean, maxMs = 4_000) => {
+		const deadline = Date.now() + maxMs;
+		while (!predicate() && Date.now() < deadline) await delay(20);
+		assert.equal(predicate(), true, "Timed out waiting for expected audio state");
+	};
+	try {
+		const { room, guild } = mockVoiceRoom("guild-watchdog", "voice-watchdog");
+		player = await engine.getOrCreatePlayer({ guildId: guild.id, voiceChannelId: room.id, textChannelId: "text" });
+		const wav = createSampleWavBuffer(12_000, 48_000);
+		player.pluginManager.getRelatedTracks = async () => [];
+		player.pluginManager.getStream = async () => ({ type: "arbitrary", stream: Readable.from([wav]) });
+		const connection = fakeReadyConnection(room.id);
+		player.connection = connection;
+		await engine.ensureConnected(player, room);
+		assert.equal(await player.play(sampleTrack(1)), true);
+		const queued = Array.from({ length: 20 }, (_, index) => sampleTrack(index + 2));
+		player.queue.addMultiple(queued);
+		await waitUntil(() => connection.packets.filter((p: Buffer) => p.length > 3).length >= 8);
+		connection.state.subscription.unsubscribe();
+		await waitUntil(() => player.audioPlayer.state.status === AudioPlayerStatus.AutoPaused, 1_500);
+		const stoppedAt = connection.packets.length;
+		await delay(200);
+		assert.equal(connection.packets.length, stoppedAt, "No packets should be sent while there is no subscription");
+		await waitUntil(() => connection.state.subscription?.player === player.audioPlayer, 3_000);
+		await waitUntil(() => connection.packets.filter((p: Buffer) => p.length > 3).length >= stoppedAt + 8);
+		assert.equal(player.audioPlayer.state.status, AudioPlayerStatus.Playing);
+		assert.equal(player.currentTrack.id, "track-1");
+		assert.deepEqual(player.upcomingTracks.map((t: Track) => t.id), queued.map((t) => t.id));
+		const resumed = connection.packets.slice(stoppedAt).filter((p: Buffer) => p.length > 3).slice(0, 8);
+		let power = 0, samples = 0;
+		for (const packet of resumed) {
+			const pcm = decoder.decode(packet);
+			for (let i = 0; i < pcm.length; i += 2) { const value = pcm.readInt16LE(i); power += value * value; samples++; }
+		}
+		assert.ok(samples > 0 && Math.sqrt(power / samples) > 50, "Recovered packets must decode to non-silent audio");
+
+		await player.action({ type: "PAUSE" });
+		assert.equal(player.audioPlayer.state.status, AudioPlayerStatus.Paused);
+		connection.state.subscription.unsubscribe();
+		(engine as any).recoverMusicSubscriptions();
+		assert.equal(connection.state.subscription?.player, player.audioPlayer);
+		assert.equal(player.audioPlayer.state.status, AudioPlayerStatus.Paused, "Repair must not undo a deliberate pause");
+
+		const ttsPlayer = player.runtimeGraph.ttsController.player;
+		const raw = Buffer.alloc(48_000 * 2 * 2 * 3);
+		const ttsResource = createAudioResource(Readable.from([raw]), { inputType: StreamType.Raw });
+		connection.subscribe(ttsPlayer);
+		ttsPlayer.play(ttsResource);
+		await waitUntil(() => ttsPlayer.state.status !== AudioPlayerStatus.Idle, 1_500);
+		(engine as any).recoverMusicSubscriptions();
+		assert.equal(connection.state.subscription?.player, ttsPlayer, "A speaking TTS player keeps its subscription");
+		connection.state.subscription.unsubscribe();
+		(engine as any).recoverMusicSubscriptions();
+		assert.equal(connection.state.subscription, undefined, "Do not steal voice while TTS is active but temporarily detached");
+		ttsPlayer.stop(true);
+		(engine as any).recoverMusicSubscriptions();
+		assert.equal(connection.state.subscription?.player, player.audioPlayer);
+		assert.equal(player.audioPlayer.state.status, AudioPlayerStatus.Paused);
+
+		connection.state.subscription.unsubscribe();
+		Object.defineProperty(player, "playbackMode", { configurable: true, get: () => "forward" });
+		(engine as any).recoverMusicSubscriptions();
+		assert.equal(connection.state.subscription, undefined, "Forward/mirrored playback must not be altered");
+		delete player.playbackMode;
+		(engine as any).recoverMusicSubscriptions();
+		assert.equal(connection.state.subscription?.player, player.audioPlayer);
+		assert.deepEqual(player.upcomingTracks.map((t: Track) => t.id), queued.map((t) => t.id));
+
+		// Lavalink can expose a remote track while playbackMode still says native;
+		// an idle local AudioPlayer is not evidence that it should be subscribed.
+		const originalGetAll = engine.manager.getAll.bind(engine.manager);
+		const remoteConnection = fakeReadyConnection("remote-voice");
+		(engine.manager as any).getAll = () => [{
+			guildId: "remote", destroyed: false, currentTrack: sampleTrack(99), playbackMode: "native",
+			connection: remoteConnection, audioPlayer: { state: { status: AudioPlayerStatus.Idle } },
+			runtimeGraph: { ttsController: { player: { state: { status: AudioPlayerStatus.Idle } } } },
+		}];
+		try {
+			(engine as any).recoverMusicSubscriptions();
+			assert.equal(remoteConnection.state.subscription, undefined, "Remote playback must remain untouched");
+		} finally { (engine.manager as any).getAll = originalGetAll; }
+	} finally {
+		decoder.delete();
+		if (player) {
+			player.runtimeGraph.ttsController.player.stop(true);
+			await player.action({ type: "STOP" }).catch(() => undefined);
+			player.connection?.state.subscription?.unsubscribe();
+			player.connection = null;
+		}
+		await engine.shutdown({ saveSessions: false });
+		client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("restoring an old snapshot does not overwrite a newly started live queue", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-restore-live-queue-"));
+	const { client, engine } = createBotInstance({
+		DISCORD_TOKEN: "dummy", ENABLE_PERSISTENCE: "true", PERSISTENCE_FILE: path.join(dir, "sessions.json"),
+	});
+	try {
+		const { room, guild } = mockVoiceRoom("guild-live", "voice-live");
+		room.members.set("human", { user: { bot: false } });
+		client.guilds.cache.set(guild.id, guild);
+		const player = await engine.getOrCreatePlayer({ guildId: guild.id, voiceChannelId: room.id, textChannelId: "text" });
+		player.setCurrentTrack(sampleTrack(90));
+		player.queue.addMultiple([sampleTrack(91), sampleTrack(92)]);
+		let connections = 0;
+		engine.ensureConnected = async () => { connections++; };
+		engine.persistence.loadValidSessions = async () => [{
+			guildId: guild.id, voiceChannelId: room.id, textChannelId: "text", currentTrack: sampleTrack(1),
+			upcomingTracks: [sampleTrack(2)], volume: 50, loopMode: "off", autoPlay: false, activeFilters: [], savedAt: Date.now(),
+		}];
+		assert.equal(await engine.restorePersistedSessions(), 0);
+		assert.equal(connections, 0);
+		assert.equal(player.currentTrack?.id, "track-90");
+		assert.deepEqual(player.upcomingTracks.map((t) => t.id), ["track-91", "track-92"]);
+		const backup = JSON.parse(await fs.readFile(path.join(dir, "sessions.json.recovery.json"), "utf8"));
+		assert.equal(backup[0].currentTrack.id, "track-1");
+	} finally {
+		await engine.shutdown({ saveSessions: false });
+		client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("a corrupt music snapshot is not replaced with an empty periodic or shutdown save", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "zi-restore-corrupt-"));
+	const file = path.join(dir, "sessions.json");
+	await fs.writeFile(file, "not valid json");
+	const { client, engine } = createBotInstance({ DISCORD_TOKEN: "dummy", ENABLE_PERSISTENCE: "true", PERSISTENCE_FILE: file });
+	try {
+		await assert.rejects(engine.restorePersistedSessions(), /không hợp lệ/);
+		engine.startSessionSaving();
+		assert.equal((engine.persistence as any).timer, null);
+		await engine.shutdown();
+		assert.equal(await fs.readFile(file, "utf8"), "not valid json");
+	} finally {
+		await engine.shutdown({ saveSessions: false });
+		client.destroy();
+		await fs.rm(dir, { recursive: true, force: true });
 	}
 });

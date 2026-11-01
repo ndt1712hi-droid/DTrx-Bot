@@ -98,7 +98,10 @@ export class ZiMusicBotEngine {
 	private readonly reconnectPending = new Set<string>();
 	private readonly suppressedSessionRestores = new Set<string>();
 	private readonly reconnectBackoff = new Map<string, { failures: number; retryAt: number }>();
+	private readonly subscriptionWarnings = new Map<string, number>();
+	private musicSubscriptionTimer: NodeJS.Timeout | null = null;
 	private alwaysOnTimer: NodeJS.Timeout | null = null;
+	private sessionRestoreComplete = false;
 	private shuttingDown = false;
 
 	constructor(client: Client, config: BotConfig) {
@@ -145,6 +148,10 @@ export class ZiMusicBotEngine {
 
 		this.bindManagerEvents();
 		this.bindDiscordVoiceEvents();
+		// A Ready voice connection can lose its music subscription after setup.
+		// Repair only that small state; never restart tracks or mutate the queue.
+		this.musicSubscriptionTimer = setInterval(() => this.recoverMusicSubscriptions(), 2_000);
+		this.musicSubscriptionTimer.unref?.();
 	}
 
 	/** Guard ZiPlayer's own idle timers while 24/7 is enabled, without changing
@@ -488,6 +495,34 @@ export class ZiMusicBotEngine {
 		return player;
 	}
 
+	/** Restore a missing music subscription without interfering with TTS or pause. */
+	private recoverMusicSubscriptions(): void {
+		if (this.shuttingDown) return;
+		for (const player of this.manager.getAll()) {
+			if (player.destroyed || !player.currentTrack || player.playbackMode !== "native") continue;
+			// A remote extension can report "native" mode while it plays elsewhere.
+			// Only repair when the local AudioPlayer actually has a live resource.
+			if (player.audioPlayer.state.status === AudioPlayerStatus.Idle) continue;
+			const connection = player.connection;
+			if (!connection || connection.state.status !== VoiceConnectionStatus.Ready) continue;
+			const ttsPlayer = player.runtimeGraph.ttsController.player;
+			// Do not steal voice from a TTS that is buffering, speaking, or paused,
+			// even if its own connection subscription has just been displaced.
+			if (ttsPlayer.state.status !== AudioPlayerStatus.Idle) continue;
+			if (connection.state.subscription?.player === player.audioPlayer) continue;
+			try {
+				this.ensureAudioSubscription(player);
+				this.subscriptionWarnings.delete(player.guildId);
+			} catch (error) {
+				const now = Date.now();
+				if (now - (this.subscriptionWarnings.get(player.guildId) ?? 0) >= 60_000) {
+					this.subscriptionWarnings.set(player.guildId, now);
+					console.warn(`[Voice] Chưa khôi phục được kết nối nhạc server ${player.guildId}:`, error instanceof Error ? error.message : error);
+				}
+			}
+		}
+	}
+
 	/** A ready voice connection can still be detached from the music player. */
 	private ensureAudioSubscription(player: Player): void {
 		const connection = player.connection;
@@ -711,6 +746,7 @@ export class ZiMusicBotEngine {
 		});
 
 		this.manager.on("playerDestroy", (player: Player) => {
+			this.subscriptionWarnings.delete(player.guildId);
 			this.clearGuildTimers(player.guildId);
 			void this.updateControllerInPlace(player, true);
 		});
@@ -864,9 +900,17 @@ export class ZiMusicBotEngine {
 	 * Restores active sessions saved prior to a bot restart if human listeners are still in the voice channel.
 	 */
 	async restorePersistedSessions(): Promise<number> {
-		if (!this.config.enablePersistence) return 0;
+		if (!this.config.enablePersistence) {
+			this.sessionRestoreComplete = true;
+			return 0;
+		}
 		await this.alwaysOnStore.ready().catch(() => undefined);
 		const sessions = await this.persistence.loadValidSessions();
+		// Keep one manual recovery copy in case Discord/voice is unavailable or
+		// the host stops again before a fresh periodic snapshot can be written.
+		await this.persistence.backupForRecovery(sessions).catch((error: unknown) => {
+			console.warn("[Persistence] Không thể tạo bản dự phòng phiên nhạc:", error instanceof Error ? error.message : error);
+		});
 		let restoredCount = 0;
 
 		for (const session of sessions) {
@@ -889,6 +933,9 @@ export class ZiMusicBotEngine {
 						voiceChannelId: session.voiceChannelId,
 						textChannelId: session.textChannelId,
 					});
+					// A listener may have started a new session while startup was still
+					// restoring snapshots. Never insert old songs into their live queue.
+					if (player.currentTrack || player.queueSize > 0) return;
 
 					await this.ensureConnected(player, voiceCh);
 					player.setVolume(session.volume);
@@ -905,11 +952,15 @@ export class ZiMusicBotEngine {
 					];
 
 					if (tracksToRestore.length > 0) {
-						const [first, ...rest] = tracksToRestore;
-						if (rest.length > 0) {
-							player.queue.addMultiple(rest);
+						// ZiPlayer.play(track) appends to an existing queue before starting.
+						// Enqueue the whole snapshot in order and start its first item;
+						// otherwise the first waiting song starts before the current song.
+						player.queue.addMultiple(tracksToRestore);
+						const started = await player.play(null, tracksToRestore[0].requestedBy);
+						if (!started) {
+							console.warn(`[Persistence] Không thể bắt đầu phiên nhạc đã lưu cho server ${session.guildId}.`);
+							return;
 						}
-						await player.play(first, first.requestedBy);
 						restoredCount++;
 
 						const textChannel = this.resolveSendableChannel(session.textChannelId);
@@ -928,19 +979,32 @@ export class ZiMusicBotEngine {
 			}
 		}
 
-		await this.persistence.clearFile();
+		// Do not delete the old snapshot before the first new one has been saved.
+		this.sessionRestoreComplete = true;
 		return restoredCount;
+	}
+
+	startSessionSaving(): void {
+		// A slow restore must finish before periodic snapshots may overwrite it.
+		if (!this.shuttingDown && this.sessionRestoreComplete) {
+			this.persistence.startPeriodicSave(this.manager, 30_000);
+		}
 	}
 
 	async shutdown(options: { saveSessions?: boolean } = {}): Promise<void> {
 		this.shuttingDown = true;
+		if (this.musicSubscriptionTimer) clearInterval(this.musicSubscriptionTimer);
+		this.musicSubscriptionTimer = null;
+		this.subscriptionWarnings.clear();
 		if (this.alwaysOnTimer) clearInterval(this.alwaysOnTimer);
 		this.alwaysOnTimer = null;
 		await Promise.allSettled([...this.voiceModeLocks.values()]);
 		this.persistence.stopPeriodicSave();
-		// A client that never connected has no players; saving it would replace
-		// previously persisted sessions with an empty array during intent retry.
-		if (options.saveSessions !== false) await this.persistence.saveAll(this.manager).catch(() => undefined);
+		// Never overwrite an old snapshot while startup restoration is unfinished
+		// (or when a client failed before login during an intent retry).
+		if (options.saveSessions !== false && this.sessionRestoreComplete) {
+			await this.persistence.saveAll(this.manager).catch(() => undefined);
+		}
 		for (const guildId of [...this.refreshTimers.keys(), ...this.emptyChannelTimers.keys()]) {
 			this.clearGuildTimers(guildId);
 		}

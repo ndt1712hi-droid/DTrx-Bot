@@ -1,6 +1,6 @@
 import { SoundCloudPlugin } from "@ziplayer/plugin";
 import type { SearchResult, StreamInfo, Track } from "ziplayer";
-import { resolveSimilarMusic } from "./similarMusicFallback.js";
+import { firstBytesReady, resolveSimilarMusic } from "./similarMusicFallback.js";
 
 // The locked upstream version starts two promises during construction without
 // handling their rejection. Its fields are TypeScript-private, not #private.
@@ -40,18 +40,27 @@ export class ResilientSoundCloudPlugin extends SoundCloudPlugin {
 		return super.search(query, requestedBy);
 	}
 
-	override async getStream(track: Track): Promise<StreamInfo> {
+	override async getStream(track: Track, signal?: AbortSignal): Promise<StreamInfo> {
 		await this.ensureReady();
-		return super.getStream(track);
+		const info = await super.getStream(track);
+		try {
+			if (!info?.stream) throw new Error("SoundCloud returned no audio stream");
+			const startTimeoutMs = Math.max(250, Math.min(8_000, this.fallbackBudgetMs - 750));
+			await firstBytesReady(info.stream, startTimeoutMs, signal);
+			return info;
+		} catch (error) {
+			info?.stream?.destroy();
+			throw error;
+		}
 	}
 
 	override async getFallback(track: Track, signal?: AbortSignal): Promise<StreamInfo> {
 		return resolveSimilarMusic({
 			requested: track, source: this.name, signal, budgetMs: this.fallbackBudgetMs,
 			search: (query, requestedBy) => this.search(query, requestedBy),
-			// The upstream SoundCloud extractor does not accept AbortSignal; the
-			// bounded resolver still destroys a late-returning stream if it times out.
-			open: (candidate) => this.getStream(candidate),
+			// The upstream extractor itself does not accept AbortSignal; our
+			// first-byte check and the bounded resolver still dispose late streams.
+			open: (candidate, candidateSignal) => this.getStream(candidate, candidateSignal),
 		});
 	}
 }

@@ -9,8 +9,16 @@ import type { SearchResult, StreamInfo, Track } from "ziplayer";
 export declare class ResilientYouTubePlugin extends YouTubePlugin {
     private readonly fallbackBudgetMs;
     constructor(options?: PluginOptions, fallbackBudgetMs?: number);
+    /**
+     * Upstream can return a stream before it has produced data. In that case a
+     * failed SABR stream never reaches its own youtubei retry and looks like a
+     * successfully opened song. Check the first bytes without consuming them,
+     * then try the *same video* through the existing second transport.
+     */
+    getStream(track: Track, signal?: AbortSignal): Promise<StreamInfo>;
     getFallback(track: Track, signal?: AbortSignal): Promise<StreamInfo>;
     search(query: string, requestedBy: string): Promise<SearchResult>;
+    private openOriginalRetry;
     private findExactById;
     /**
      * ZiPlayer's current Mix helper tries full info per recommendation. If the

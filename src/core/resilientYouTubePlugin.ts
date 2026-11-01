@@ -1,6 +1,6 @@
 import { YouTubePlugin, type PluginOptions } from "@ziplayer/plugin";
 import type { SearchResult, StreamInfo, Track } from "ziplayer";
-import { resolveSimilarMusic } from "./similarMusicFallback.js";
+import { firstBytesReady, resolveSimilarMusic } from "./similarMusicFallback.js";
 
 const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 
@@ -29,6 +29,9 @@ type FeedOptions = { listId?: string; fallbackToLightweight?: boolean };
 type YouTubeCompatibility = {
 	resolveFeedTrackViaFullInfo?: (item: unknown, requestedBy: string, options?: FeedOptions) => Promise<Track | null>;
 	buildTrack?: (item: unknown, requestedBy: string, extra?: { playlist?: string }) => Track;
+	// The installed plugin already has a second transport for the same video.
+	// It is private upstream, so keep this adapter guarded and version-local.
+	downloadWithYoutubei?: (track: Track, id: string, signal?: AbortSignal) => Promise<StreamInfo>;
 };
 
 /**
@@ -41,6 +44,30 @@ export class ResilientYouTubePlugin extends YouTubePlugin {
 	constructor(options?: PluginOptions, private readonly fallbackBudgetMs = 25_000) {
 		super(options);
 		this.repairMixFeedFallback();
+	}
+
+	/**
+	 * Upstream can return a stream before it has produced data. In that case a
+	 * failed SABR stream never reaches its own youtubei retry and looks like a
+	 * successfully opened song. Check the first bytes without consuming them,
+	 * then try the *same video* through the existing second transport.
+	 */
+	override async getStream(track: Track, signal?: AbortSignal): Promise<StreamInfo> {
+		const startTimeoutMs = Math.max(250, Math.min(8_000, this.fallbackBudgetMs - 750));
+		const original = await super.getStream(track, signal);
+		try {
+			if (!original?.stream) throw new Error("YouTube returned no audio stream");
+			await firstBytesReady(original.stream, startTimeoutMs, signal);
+			return original;
+		} catch (error) {
+			original?.stream?.destroy();
+			if (signal?.aborted) throw error;
+			const transport = (this as unknown as YouTubeCompatibility).downloadWithYoutubei;
+			const id = VIDEO_ID.test(track.id ?? "") ? track.id : youtubeTarget(track.url ?? "")?.id;
+			if (!transport || !id) throw error;
+			console.warn("[YouTube] Luồng đầu không có dữ liệu; đang thử lại chính video bằng luồng khác.");
+			return this.openOriginalRetry((retrySignal) => transport.call(this, track, id, retrySignal), signal, startTimeoutMs);
+		}
 	}
 
 	override async getFallback(track: Track, signal?: AbortSignal): Promise<StreamInfo> {
@@ -89,6 +116,47 @@ export class ResilientYouTubePlugin extends YouTubePlugin {
 			console.warn(`[YouTube] Bỏ qua ${original.length - tracks.length} mục thiếu thông tin trong kết quả.`);
 		}
 		return { ...result, tracks };
+	}
+
+	private async openOriginalRetry(
+		open: (signal: AbortSignal) => Promise<StreamInfo>,
+		parent: AbortSignal | undefined,
+		timeoutMs: number,
+	): Promise<StreamInfo> {
+		const controller = new AbortController();
+		const forwardAbort = () => controller.abort(parent?.reason ?? new Error("YouTube retry aborted"));
+		if (parent?.aborted) forwardAbort();
+		else parent?.addEventListener("abort", forwardAbort, { once: true });
+		const timer = setTimeout(() => controller.abort(new Error("YouTube original retry timed out")), timeoutMs);
+		let onAbort: () => void = () => undefined;
+		const aborted = new Promise<never>((_resolve, reject) => {
+			onAbort = () => reject(controller.signal.reason instanceof Error ? controller.signal.reason : new Error("YouTube retry aborted"));
+			if (controller.signal.aborted) onAbort();
+			else controller.signal.addEventListener("abort", onAbort, { once: true });
+		});
+		let abandoned = false;
+		let info: StreamInfo | undefined;
+		const request = Promise.resolve().then(() => {
+			if (controller.signal.aborted) throw controller.signal.reason;
+			return open(controller.signal);
+		});
+		// Some upstream transports ignore cancellation. Dispose their late streams.
+		void request.then((late) => { if (abandoned) late?.stream?.destroy(); }, () => undefined);
+		try {
+			info = await Promise.race([request, aborted]);
+			if (!info?.stream) throw new Error("YouTube retry returned no audio stream");
+			await firstBytesReady(info.stream, timeoutMs, controller.signal);
+			return info;
+		} catch (error) {
+			abandoned = true;
+			info?.stream?.destroy();
+			if (!controller.signal.aborted) controller.abort();
+			throw error;
+		} finally {
+			clearTimeout(timer);
+			parent?.removeEventListener("abort", forwardAbort);
+			controller.signal.removeEventListener("abort", onAbort);
+		}
 	}
 
 	private async findExactById(id: string, requestedBy: string): Promise<Track | undefined> {

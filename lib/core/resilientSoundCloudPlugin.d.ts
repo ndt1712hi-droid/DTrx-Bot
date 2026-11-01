@@ -7,6 +7,6 @@ export declare class ResilientSoundCloudPlugin extends SoundCloudPlugin {
     constructor(fallbackBudgetMs?: number);
     private ensureReady;
     search(query: string, requestedBy: string): Promise<SearchResult>;
-    getStream(track: Track): Promise<StreamInfo>;
+    getStream(track: Track, signal?: AbortSignal): Promise<StreamInfo>;
     getFallback(track: Track, signal?: AbortSignal): Promise<StreamInfo>;
 }

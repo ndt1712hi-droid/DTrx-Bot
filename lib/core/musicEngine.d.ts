@@ -19,7 +19,10 @@ export declare class ZiMusicBotEngine {
     private readonly reconnectPending;
     private readonly suppressedSessionRestores;
     private readonly reconnectBackoff;
+    private readonly subscriptionWarnings;
+    private musicSubscriptionTimer;
     private alwaysOnTimer;
+    private sessionRestoreComplete;
     private shuttingDown;
     constructor(client: Client, config: BotConfig);
     /** Guard ZiPlayer's own idle timers while 24/7 is enabled, without changing
@@ -57,6 +60,8 @@ export declare class ZiMusicBotEngine {
         voiceChannelId: string;
         textChannelId: string;
     }): Promise<Player>;
+    /** Restore a missing music subscription without interfering with TTS or pause. */
+    private recoverMusicSubscriptions;
     /** A ready voice connection can still be detached from the music player. */
     private ensureAudioSubscription;
     /**
@@ -79,6 +84,7 @@ export declare class ZiMusicBotEngine {
      * Restores active sessions saved prior to a bot restart if human listeners are still in the voice channel.
      */
     restorePersistedSessions(): Promise<number>;
+    startSessionSaving(): void;
     shutdown(options?: {
         saveSessions?: boolean;
     }): Promise<void>;

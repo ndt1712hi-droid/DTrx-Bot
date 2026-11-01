@@ -131,9 +131,17 @@ docker run -d --name ziplayer-bot --env-file .env -v "$(pwd)/data:/app/data" --r
 2. Nhập `/play`, dán tên bài hoặc link vào ô `query`, sau đó gửi lệnh. Dùng link chỉ có `watch?v=...` nếu muốn phát một video thay vì cả danh sách Mix. `/playnext` chèn bài vào đầu hàng đợi. Link dài được giữ nguyên; nếu gợi ý hết hạn hoặc bot vừa khởi động lại, dán link và gửi lại.
 3. Dùng `/volume level:80` nếu âm lượng bằng 0; dùng `/resume` nếu nhạc đang tạm dừng.
 4. Bot phải có quyền **View Channel**, **Connect** và **Speak** trong phòng, và không bị tắt tiếng bởi quản trị viên. Với Stage, bot cần được mời làm diễn giả.
-5. Bot thử nguồn gốc trước. Nếu nguồn đó không tải được, bot thử tìm một số bản phù hợp trên YouTube/SoundCloud, ưu tiên cùng bài và ca sĩ khi nhận diện được; kết quả chỉ là so khớp gần đúng và có thể là bản cover, live hoặc ca sĩ khác. Bot báo tên và nguồn bản thực sự được chọn; xem `/nowplaying` hoặc `/queue`. Để tiết kiệm tài nguyên, mỗi nguồn chỉ tìm tối đa 3 lượt và thử tối đa 3 luồng; nếu không tìm thấy bản đủ phù hợp, bot không cố phát bài không liên quan.
+5. Bot thử nguồn gốc trước. Nếu luồng YouTube trả về không có dữ liệu, bot thử lại **chính video đó** bằng đường tải khác; nếu vẫn không tải được, bot thử tìm một số bản phù hợp trên YouTube/SoundCloud, ưu tiên cùng bài và ca sĩ khi nhận diện được. Kết quả chỉ là so khớp gần đúng và có thể là bản cover, live hoặc ca sĩ khác. Bot báo tên và nguồn bản thực sự được chọn; xem `/nowplaying` hoặc `/queue`. Để tiết kiệm tài nguyên, mỗi nguồn chỉ tìm tối đa 3 lượt và thử tối đa 3 luồng; nếu không tìm thấy bản đủ phù hợp, bot không cố phát bài không liên quan.
 6. Không thể bảo đảm phát mọi bài: nội dung riêng tư, bị xóa, giới hạn khu vực, được bảo vệ bản quyền/DRM, hoặc bị chặn bởi nhà cung cấp hay mạng Botkeep có thể không truy cập được. Spotify cung cấp thông tin bài hát; âm thanh phải lấy từ nguồn khác.
 7. Nếu bot đã vào phòng nhưng vẫn im lặng, xem log Botkeep có dòng `[Runtime]`, `[Voice]`, `[YouTube]`, `[SoundCloud]`, `[MusicFallback]`, `[Playback]` hoặc `[ZiPlayer]`. Trước khi gửi log cho người khác, xóa token, thông tin đăng nhập và URL có chữ ký. Tiếng chuông vào phòng và thông báo đã thêm vào hàng đợi không chứng minh người nghe đã nhận được âm thanh.
+
+Khi kết nối voice sẵn sàng nhưng bị mất liên kết với trình phát nhạc, bot thử nối lại mà không xóa hàng đợi, không tiếp tục bài người dùng đã tạm dừng và không ngắt TTS hoặc chế độ chuyển tiếp. Tính năng này không thể khắc phục mọi lỗi mạng hay bảo đảm âm thanh đã đến thiết bị người nghe.
+
+### Giữ hàng đợi qua cập nhật
+
+Với `ENABLE_PERSISTENCE=true` (mặc định), bot lưu bài hiện tại và tối đa 100 bài chờ mỗi 30 giây và khi tắt bình thường vào `data/sessions.json` (hoặc `PERSISTENCE_FILE`). Trước khi cập nhật, giữ nguyên toàn bộ thư mục `data/` và nên tải một bản sao file phiên nhạc. Khi bot khởi động lại, cần còn người trong phòng thoại, dữ liệu không quá 6 giờ và phòng/nguồn phát còn truy cập được; bài hiện tại bắt đầu lại từ đầu, tiếp theo là các bài chờ theo thứ tự. Nếu host xóa dữ liệu hoặc phiên chưa kịp lưu, bot không thể tự khôi phục hàng đợi đó.
+
+Từ 1.6.1, bot giữ một bản sao đầu vào tại `data/sessions.json.recovery.json` trước khi khôi phục; đây là bản **dự phòng thủ công**, không tự phát lại sau `/stop` hoặc `/leave`. Nếu đổi `PERSISTENCE_FILE`, tên bản sao là đường dẫn đó thêm `.recovery.json`. Bản sao không thay thế việc giữ thư mục dữ liệu khi redeploy.
 
 ### Trả lời tin nhắn tự động
 
