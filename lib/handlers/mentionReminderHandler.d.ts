@@ -19,6 +19,8 @@ export declare class MentionReminderService {
     private readonly reserved;
     private readonly lastSent;
     private readonly queues;
+    private readonly cleanupDelayCancels;
+    private readonly closeSignal;
     private closed;
     constructor(client: Client, store: MentionReminderStore, schedule?: Schedule);
     close(): Promise<void>;
@@ -34,6 +36,12 @@ export declare class MentionReminderService {
     private tick;
     private sendOne;
     private stop;
+    /** Cancel the five-second wait during shutdown without deleting any messages. */
+    private waitBeforeCleanup;
+    private untilClosed;
+    /** Fetch recent messages in pages so a typical batch can be verified with
+     * one request, then force-fetch only IDs not found in those pages. */
+    private prepareCleanup;
     private clearMessages;
 }
 export declare function isMentionReminderButton(customId: string): boolean;
