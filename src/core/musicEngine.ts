@@ -1,6 +1,6 @@
 import path from "node:path";
 import { once } from "node:events";
-import { AudioPlayerStatus, VoiceConnectionStatus } from "@discordjs/voice";
+import { AudioPlayerStatus, VoiceConnectionDisconnectReason, VoiceConnectionStatus } from "@discordjs/voice";
 import {
 	ChannelType,
 	EmbedBuilder,
@@ -94,13 +94,18 @@ export class ZiMusicBotEngine {
 	private readonly alwaysOnStore: AlwaysOnVoiceStore;
 	private readonly guardedPlayers = new WeakSet<Player>();
 	private readonly monitoredConnections = new WeakSet<NonNullable<Player["connection"]>>();
+	private readonly voiceRecoveryTargets = new WeakMap<NonNullable<Player["connection"]>, { player: Player; channel: VoiceBasedChannel; recoverableDisconnect: boolean }>();
+	private readonly proactiveVoiceRecoveries = new Map<string, Promise<void>>();
 	private readonly voiceModeLocks = new Map<string, Promise<unknown>>();
+	private readonly voiceConnectionLocks = new Map<string, Promise<void>>();
+	private readonly expectedVoiceLeaves = new Map<string, { player: Player; fromChannelId: string; timer: NodeJS.Timeout }>();
 	private readonly reconnectPending = new Set<string>();
 	private readonly suppressedSessionRestores = new Set<string>();
 	private readonly reconnectBackoff = new Map<string, { failures: number; retryAt: number }>();
 	private readonly subscriptionWarnings = new Map<string, number>();
 	private musicSubscriptionTimer: NodeJS.Timeout | null = null;
 	private alwaysOnTimer: NodeJS.Timeout | null = null;
+	private readonly shutdownSignal = new AbortController();
 	private sessionRestoreComplete = false;
 	private shuttingDown = false;
 
@@ -168,6 +173,32 @@ export class ZiMusicBotEngine {
 			scheduleLeave(reason);
 		};
 		this.guardedPlayers.add(player);
+	}
+
+	private clearExpectedVoiceLeave(guildId: string): void {
+		const expected = this.expectedVoiceLeaves.get(guildId);
+		if (expected) clearTimeout(expected.timer);
+		this.expectedVoiceLeaves.delete(guildId);
+	}
+
+	/** ZiPlayer replaces a connection by sending a leave before joining again.
+	 * The corresponding gateway event must not be mistaken for a moderator kick. */
+	private expectReplacementLeave(player: Player, fromChannelId: string, lifetimeMs = 20_000): void {
+		this.clearExpectedVoiceLeave(player.guildId);
+		const timer = setTimeout(() => {
+			const expected = this.expectedVoiceLeaves.get(player.guildId);
+			if (expected?.timer === timer) this.expectedVoiceLeaves.delete(player.guildId);
+		}, lifetimeMs);
+		timer.unref?.();
+		this.expectedVoiceLeaves.set(player.guildId, { player, fromChannelId, timer });
+	}
+
+	private finishReplacementLeave(player: Player): void {
+		const expected = this.expectedVoiceLeaves.get(player.guildId);
+		if (expected?.player === player) {
+			// The gateway can report our leave shortly after the new join is ready.
+			this.expectReplacementLeave(player, expected.fromChannelId, 3_000);
+		}
 	}
 
 	private clearEmptyChannelTimer(guildId: string): void {
@@ -536,14 +567,25 @@ export class ZiMusicBotEngine {
 			});
 		}
 
-		// Mirroring uses the leader's AudioPlayer. TTS temporarily replaces the
-		// subscription while it speaks and restores music afterwards; neither
-		// should be interrupted by a /play or the 24/7 watchdog.
-		if (player.playbackMode !== "native") return;
+		// ZiPlayer can replace the subscription with music when voice becomes
+		// Ready again. Restore an active TTS or forward session first, without
+		// unpausing it or changing its playback mode.
 		const current = connection.state.subscription;
 		const ttsPlayer = player.runtimeGraph.ttsController.player;
-		if (current?.player === player.audioPlayer ||
-			(current?.player === ttsPlayer && ttsPlayer.state.status !== AudioPlayerStatus.Idle)) return;
+		if (ttsPlayer.state.status !== AudioPlayerStatus.Idle) {
+			if (current?.player !== ttsPlayer && !connection.subscribe(ttsPlayer)) {
+				throw new Error("Không thể nối trình phát TTS với kênh thoại");
+			}
+			return;
+		}
+		if (player.playbackMode !== "native") {
+			const leader = player.runtimeGraph.forwardController.forwardLeader;
+			if (leader && !leader.destroyed && current?.player !== leader.audioPlayer && !connection.subscribe(leader.audioPlayer)) {
+				throw new Error("Không thể khôi phục chế độ chuyển tiếp âm thanh");
+			}
+			return;
+		}
+		if (current?.player === player.audioPlayer) return;
 
 		const subscription = player.runtimeGraph.connectionController.ensureSubscription(connection);
 		if (!subscription || subscription.player !== player.audioPlayer) {
@@ -552,19 +594,141 @@ export class ZiMusicBotEngine {
 		console.log(`[Voice] Đã khôi phục kết nối trình phát âm thanh trong server ${player.guildId}.`);
 	}
 
-	/**
-	 * Connects the player to the target Discord voice/stage channel if not already connected there.
-	 */
-	async ensureConnected(player: Player, voiceChannel: VoiceBasedChannel): Promise<void> {
-		const ud = this.getUserData(player);
+	/** Begin recovery promptly for active players, not only on the next command
+	 * or the slower 24/7 watchdog. Do not proactively retry a manual/4014 stop. */
+	private monitorVoiceRecovery(player: Player, channel: VoiceBasedChannel): void {
 		const connection = player.connection;
-		const currentChannelId = connection?.joinConfig?.channelId;
-		const state = connection?.state?.status;
-		const actualChannelId = voiceChannel.guild.members.me?.voice?.channelId;
-		const moved = Boolean(actualChannelId && actualChannelId !== voiceChannel.id);
-		const disconnected = state === VoiceConnectionStatus.Disconnected || state === VoiceConnectionStatus.Destroyed;
+		if (!connection) return;
+		const existing = this.voiceRecoveryTargets.get(connection);
+		if (existing) {
+			existing.player = player;
+			existing.channel = channel;
+			return;
+		}
+		const target = { player, channel, recoverableDisconnect: false };
+		this.voiceRecoveryTargets.set(connection, target);
+		connection.on(VoiceConnectionStatus.Ready, () => { target.recoverableDisconnect = false; });
+		connection.on(VoiceConnectionStatus.Destroyed, () => {
+			const currentPlayer = target.player;
+			if (target.recoverableDisconnect && !this.shuttingDown && !currentPlayer.destroyed &&
+				this.manager.get(currentPlayer.guildId) === currentPlayer && !this.expectedVoiceLeaves.has(currentPlayer.guildId)) {
+				// ZiPlayer may destroy its own connection after a recovery timeout,
+				// which sends a gateway leave. Keep the queue for a later retry.
+				const previousChannelId = connection.joinConfig.channelId || target.channel.id;
+				if (previousChannelId) this.expectReplacementLeave(currentPlayer, previousChannelId, 3_000);
+			}
+			target.recoverableDisconnect = false;
+		});
+		connection.on(VoiceConnectionStatus.Disconnected, () => {
+			const currentPlayer = target.player;
+			const state = connection.state;
+			if (this.shuttingDown || currentPlayer.destroyed || currentPlayer.connection !== connection ||
+				this.manager.get(currentPlayer.guildId) !== currentPlayer || state.status !== VoiceConnectionStatus.Disconnected) return;
+			target.recoverableDisconnect = state.reason !== VoiceConnectionDisconnectReason.Manual &&
+				!(state.reason === VoiceConnectionDisconnectReason.WebSocketClose && state.closeCode === 4014);
+			if (!target.recoverableDisconnect || this.proactiveVoiceRecoveries.has(currentPlayer.guildId)) return;
+
+			const voiceId = this.getUserData(currentPlayer).voiceChannelId || connection.joinConfig.channelId;
+			const voice = voiceId === target.channel.id ? target.channel : target.channel.guild.channels.cache.get(voiceId ?? "");
+			if (!voice || !voice.isVoiceBased()) return;
+			const recovery = this.ensureConnected(currentPlayer, voice).catch((error: unknown) => {
+				if (!this.shuttingDown && !currentPlayer.destroyed) {
+					console.warn(`[Voice] Chưa khôi phục được kết nối server ${currentPlayer.guildId}:`, error instanceof Error ? error.message : error);
+				}
+			});
+			this.proactiveVoiceRecoveries.set(currentPlayer.guildId, recovery);
+			void recovery.finally(() => {
+				if (this.proactiveVoiceRecoveries.get(currentPlayer.guildId) === recovery) this.proactiveVoiceRecoveries.delete(currentPlayer.guildId);
+			});
+		});
+	}
+
+	/** Allow Discord's own short reconnect to complete before replacing a voice
+	 * session. Also stop waiting promptly if the connection is destroyed. */
+	private async waitForVoiceReady(connection: NonNullable<Player["connection"]>, timeoutMs: number, player: Player): Promise<boolean> {
+		if (this.shuttingDown || player.destroyed) return false;
+		if (connection.state.status === VoiceConnectionStatus.Ready) return true;
+		if (connection.state.status === VoiceConnectionStatus.Destroyed) return false;
+		const controller = new AbortController();
+		const cancel = () => controller.abort();
+		const timer = setTimeout(cancel, timeoutMs);
+		player.once("playerDestroy", cancel);
+		this.shutdownSignal.signal.addEventListener("abort", cancel, { once: true });
+		if (this.shuttingDown || player.destroyed) cancel();
+		try {
+			await Promise.race([
+				once(connection, VoiceConnectionStatus.Ready, { signal: controller.signal }),
+				once(connection, VoiceConnectionStatus.Destroyed, { signal: controller.signal }),
+			]);
+		} catch {
+			// Timeout, an underlying voice error, or cancellation. The caller
+			// checks the current state and decides whether a retry is needed.
+		} finally {
+			clearTimeout(timer);
+			player.off("playerDestroy", cancel);
+			this.shutdownSignal.signal.removeEventListener("abort", cancel);
+			controller.abort();
+		}
+		// State can change while awaiting events; TypeScript's initial narrowing
+		// does not account for that mutation.
+		const status = connection.state.status as VoiceConnectionStatus;
+		return status === VoiceConnectionStatus.Ready;
+	}
+
+	/** Serialize joins for a guild so overlapping /play, TTS and 24/7 checks do
+	 * not race one another and replace a voice connection that is still joining. */
+	async ensureConnected(player: Player, voiceChannel: VoiceBasedChannel): Promise<void> {
+		const previous = this.voiceConnectionLocks.get(player.guildId) ?? Promise.resolve();
+		const operation = previous.catch(() => undefined).then(() => this.ensureConnectedOnce(player, voiceChannel));
+		this.voiceConnectionLocks.set(player.guildId, operation);
+		try {
+			await operation;
+		} finally {
+			if (this.voiceConnectionLocks.get(player.guildId) === operation) this.voiceConnectionLocks.delete(player.guildId);
+		}
+	}
+
+	/** Connect to the requested Discord voice/stage channel if needed. */
+	private async ensureConnectedOnce(player: Player, voiceChannel: VoiceBasedChannel): Promise<void> {
+		if (this.shuttingDown || player.destroyed) throw new Error("Trình phát đã bị ngắt trong lúc kết nối voice");
+		const ud = this.getUserData(player);
+		let connection = player.connection;
+		let currentChannelId = connection?.joinConfig?.channelId;
+		let state = connection?.state?.status;
+		let actualChannelId = voiceChannel.guild.members.me?.voice?.channelId;
 		let joined = false;
 
+		if (connection && state === VoiceConnectionStatus.Disconnected && currentChannelId === voiceChannel.id &&
+			typeof connection.rejoin === "function") {
+			// Discord or its voice library may already be repairing a brief drop.
+			// Give that a chance rather than destroying a live player immediately.
+			await this.waitForVoiceReady(connection, 2_000, player);
+			if (this.shuttingDown || player.destroyed) throw new Error("Trình phát đã bị ngắt trong lúc kết nối voice");
+			connection = player.connection;
+			currentChannelId = connection?.joinConfig?.channelId;
+			state = connection?.state?.status;
+			actualChannelId = voiceChannel.guild.members.me?.voice?.channelId;
+			if (connection && state === VoiceConnectionStatus.Disconnected && currentChannelId === voiceChannel.id) {
+				const detail = connection.state;
+				// A 4014 or manual disconnect is not suitable for an in-place
+				// retry. Let the normal fresh-connection path handle it instead.
+				const forbidden = detail.status === VoiceConnectionStatus.Disconnected && (
+					detail.reason === VoiceConnectionDisconnectReason.Manual ||
+					(detail.reason === VoiceConnectionDisconnectReason.WebSocketClose && detail.closeCode === 4014)
+				);
+				if (!forbidden && connection.rejoin({
+					channelId: voiceChannel.id,
+					selfDeaf: connection.joinConfig.selfDeaf,
+					selfMute: connection.joinConfig.selfMute,
+				})) {
+					state = connection.state.status;
+					joined = true;
+				}
+			}
+		}
+
+		const moved = Boolean(actualChannelId && actualChannelId !== voiceChannel.id);
+		const disconnected = state === VoiceConnectionStatus.Disconnected || state === VoiceConnectionStatus.Destroyed;
 		if (connection && state === VoiceConnectionStatus.Ready && (currentChannelId !== voiceChannel.id || moved)) {
 			// ZiPlayer can reuse a ready connection without moving it. Send a voice
 			// rejoin directly when the chosen room differs from the current room.
@@ -576,24 +740,27 @@ export class ZiMusicBotEngine {
 			if (!sent) throw new Error("Không thể gửi yêu cầu chuyển kênh thoại");
 			joined = true;
 		} else if (!connection || currentChannelId !== voiceChannel.id || disconnected) {
-			await player.connect(voiceChannel as unknown as Parameters<Player["connect"]>[0]);
-			if (player.destroyed) throw new Error("Trình phát đã bị ngắt trong lúc kết nối voice");
+			const previousChannelId = currentChannelId || actualChannelId;
+			if (previousChannelId) this.expectReplacementLeave(player, previousChannelId);
+			try {
+				await player.connect(voiceChannel as unknown as Parameters<Player["connect"]>[0]);
+			} finally {
+				this.finishReplacementLeave(player);
+			}
+			if (this.shuttingDown || player.destroyed) throw new Error("Trình phát đã bị ngắt trong lúc kết nối voice");
 			joined = true;
 		}
 
 		const activeConnection = player.connection;
 		if (!activeConnection) throw new Error("Không thể tạo kết nối voice");
-		if (activeConnection.state.status !== VoiceConnectionStatus.Ready) {
-			try {
-				await once(activeConnection, VoiceConnectionStatus.Ready, { signal: AbortSignal.timeout(15_000) });
-			} catch {
-				throw new Error("Kết nối voice chưa sẵn sàng sau 15 giây; hãy kiểm tra mạng và quyền kênh");
-			}
+		if (activeConnection.state.status !== VoiceConnectionStatus.Ready && !(await this.waitForVoiceReady(activeConnection, 15_000, player))) {
+			throw new Error("Kết nối voice chưa sẵn sàng; hãy kiểm tra mạng và quyền kênh");
 		}
-		if (player.destroyed || player.connection !== activeConnection) {
+		if (this.shuttingDown || player.destroyed || player.connection !== activeConnection) {
 			throw new Error("Kết nối voice đã thay đổi trong lúc chuẩn bị phát");
 		}
 		this.ensureAudioSubscription(player);
+		this.monitorVoiceRecovery(player, voiceChannel);
 
 		if (joined) {
 			ud.voiceChannelId = voiceChannel.id;
@@ -669,6 +836,7 @@ export class ZiMusicBotEngine {
 	}
 
 	private clearGuildTimers(guildId: string): void {
+		this.clearExpectedVoiceLeave(guildId);
 		const rt = this.refreshTimers.get(guildId);
 		if (rt) {
 			clearTimeout(rt);
@@ -879,13 +1047,21 @@ export class ZiMusicBotEngine {
 
 			const botId = this.client.user?.id;
 			if (botId && newState.id === botId) {
-				// Bot was forcibly kicked from voice channel by an admin
 				if (oldState.channelId && !newState.channelId) {
+					const expected = this.expectedVoiceLeaves.get(guildId);
+					if (expected?.player === player && expected.fromChannelId === oldState.channelId) {
+						// Our own connection replacement emits this leave. Keep the
+						// player and queue while the new connection is established.
+						this.clearExpectedVoiceLeave(guildId);
+						return;
+					}
+					// An unanticipated server-side removal still tears down the player.
 					player.destroy();
 					return;
 				}
 				// Bot was moved to another voice channel
 				if (newState.channelId && oldState.channelId !== newState.channelId) {
+					if (!oldState.channelId) this.clearExpectedVoiceLeave(guildId);
 					this.clearEmptyChannelTimer(guildId);
 					const ud = this.getUserData(player);
 					ud.voiceChannelId = newState.channelId;
@@ -993,19 +1169,20 @@ export class ZiMusicBotEngine {
 
 	async shutdown(options: { saveSessions?: boolean } = {}): Promise<void> {
 		this.shuttingDown = true;
+		this.shutdownSignal.abort();
 		if (this.musicSubscriptionTimer) clearInterval(this.musicSubscriptionTimer);
 		this.musicSubscriptionTimer = null;
 		this.subscriptionWarnings.clear();
 		if (this.alwaysOnTimer) clearInterval(this.alwaysOnTimer);
 		this.alwaysOnTimer = null;
-		await Promise.allSettled([...this.voiceModeLocks.values()]);
+		await Promise.allSettled([...this.voiceModeLocks.values(), ...this.voiceConnectionLocks.values()]);
 		this.persistence.stopPeriodicSave();
 		// Never overwrite an old snapshot while startup restoration is unfinished
 		// (or when a client failed before login during an intent retry).
 		if (options.saveSessions !== false && this.sessionRestoreComplete) {
 			await this.persistence.saveAll(this.manager).catch(() => undefined);
 		}
-		for (const guildId of [...this.refreshTimers.keys(), ...this.emptyChannelTimers.keys()]) {
+		for (const guildId of [...this.refreshTimers.keys(), ...this.emptyChannelTimers.keys(), ...this.expectedVoiceLeaves.keys()]) {
 			this.clearGuildTimers(guildId);
 		}
 		this.manager.destroy();
