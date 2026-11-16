@@ -13,7 +13,7 @@
     "test": "npm run build && node --test lib/tests/*.test.js"
   },
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=20.0.0"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
