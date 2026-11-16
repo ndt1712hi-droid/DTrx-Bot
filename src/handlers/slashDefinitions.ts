@@ -245,6 +245,14 @@ export function buildSlashCommands(): RESTPostAPIChatInputApplicationCommandsJSO
 		new SlashCommandBuilder().setName("stats").setDescription("Xem thông số hoạt động của Bot & ZiPlayer Engine"),
 
 		new SlashCommandBuilder().setName("help").setDescription("Xem danh sách đầy đủ các lệnh và tính năng của Bot"),
+
+		// Thêm lệnh Avatar mới
+		new SlashCommandBuilder()
+			.setName("avatar")
+			.setDescription("Xem avatar của người dùng")
+			.addUserOption((opt) =>
+				opt.setName("user").setDescription("Người dùng cần xem (mặc định là chính bạn)").setRequired(false)
+			),
 	];
 
 	return commands.map((c) =>
