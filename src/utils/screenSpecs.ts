@@ -36,9 +36,32 @@ export const SCREEN_SPECS: Record<string, { pixels: string; dpi?: string }> = {
 	"samsung odyssey g7": { pixels: "2560 × 1440", dpi: "109" },
 	"dell u2723qe": { pixels: "3840 × 2160", dpi: "163" },
 
-	// Tablet
+	// Tablet (iPad)
 	"ipad pro 12.9": { pixels: "2732 × 2048", dpi: "264" },
+	"ipad pro 11 inch (m2)": { pixels: "2388 × 1668", dpi: "264" },
+	"ipad pro 13 inch (m4)": { pixels: "2752 × 2064", dpi: "264" },
+	"ipad pro 11 inch (m4)": { pixels: "2420 × 1668", dpi: "264" },
+	"ipad pro 13 inch (m5)": { pixels: "2752 × 2064", dpi: "264" },
+	"ipad pro 11 inch (m5)": { pixels: "2420 × 1668", dpi: "264" },
+	"ipad air 13 inch (m2)": { pixels: "2732 × 2048", dpi: "264" },
+	"ipad air 11 inch (m2)": { pixels: "2360 × 1640", dpi: "264" },
+	"ipad air 13 inch (m3)": { pixels: "2732 × 2048", dpi: "264" },
+	"ipad air 11 inch (m3)": { pixels: "2360 × 1640", dpi: "264" },
+	"ipad air 13 inch (m4)": { pixels: "2732 × 2048", dpi: "264" },
+	"ipad air 11 inch (m4)": { pixels: "2360 × 1640", dpi: "264" },
+
+	// Tablet (Samsung)
 	"samsung galaxy tab s9": { pixels: "2560 × 1600", dpi: "285" },
+	"samsung galaxy tab s10 fe": { pixels: "2304 × 1440", dpi: "249" },
+	"samsung galaxy tab s10 fe plus": { pixels: "2880 × 1800", dpi: "280" },
+	"samsung galaxy tab s11": { pixels: "2560 × 1600", dpi: "274" },
+	"samsung galaxy tab s11 ultra": { pixels: "2960 × 1848", dpi: "239" },
+	"samsung galaxy tab s10": { pixels: "2560 × 1600", dpi: "274" }, // Giả định tương tự S11
+
+	// Tablet (Xiaomi / Google / Khác)
+	"xiaomi pad 7": { pixels: "2880 × 1800", dpi: "309" },
+	"xiaomi pad 8": { pixels: "3000 × 1875", dpi: "315" },
+	"google pixel tablet 2": { pixels: "2560 × 1600", dpi: "264" },
 };
 
 // Hàm tìm kiếm (không phân biệt hoa thường, hỗ trợ viết tắt & tìm một phần tên)
@@ -52,22 +75,17 @@ export function findScreenSpec(query: string): { name: string; pixels: string; d
 		}
 	}
 
-	// 2. Xử lý viết tắt/viết thường đặc biệt (ip16promax, ip17, samsung s24ultra...)
+	// 2. Xử lý viết tắt/viết thường đặc biệt (ip16promax, ip17, samsung s24ultra... + iPad/Tablet)
 	const normalizedQuery = lowerQuery.replace(/\s+/g, ""); // bỏ khoảng trắng
 	
 	for (const [name, spec] of Object.entries(SCREEN_SPECS)) {
 		const normalizedName = name.toLowerCase().replace(/\s+/g, "");
 		
 		// --- IPHONE ---
-		// ip14promax, ip15promax, ip16promax, ip17promax, ip18promax
-		// ip17, ip16, ip15, ip14 (mặc định Pro Max theo yêu cầu)
 		if (normalizedQuery.startsWith("ip")) {
 			const numMatch = normalizedQuery.match(/\d+/);
 			const num = numMatch ? numMatch[0] : "";
-			
-			// Kiểm tra iPhone Pro Max (14-18)
 			if (["14", "15", "16", "17", "18"].includes(num)) {
-				// Kiểm tra nếu có "promax" hoặc chỉ số (ip16 -> iphone 16 pro max)
 				if (normalizedQuery.includes("promax") || normalizedQuery === "ip" + num || normalizedQuery === num) {
 					const targetName = `iphone ${num} pro max`;
 					if (name === targetName) return { name, ...spec };
@@ -76,7 +94,6 @@ export function findScreenSpec(query: string): { name: string; pixels: string; d
 		}
 
 		// --- SAMSUNG ---
-		// samsung s24ultra, s24, s24plus, s24u, s24p
 		if (normalizedQuery.includes("samsung") || normalizedQuery.startsWith("s24") || normalizedQuery.includes("s24")) {
 			if (normalizedQuery.includes("s24ultra") || normalizedQuery === "s24ultra" || normalizedQuery === "s24u") {
 				if (name === "samsung galaxy s24 ultra") return { name, ...spec };
@@ -90,7 +107,6 @@ export function findScreenSpec(query: string): { name: string; pixels: string; d
 		}
 
 		// --- PIXEL ---
-		// pixel 9, pixel 9 pro xl, p9, p9proxl, pixel 8, p8...
 		if (normalizedQuery.includes("pixel") || normalizedQuery.startsWith("p9") || normalizedQuery.startsWith("p8")) {
 			if (normalizedQuery.includes("9proxl") || normalizedQuery === "p9proxl" || normalizedQuery === "pixel9proxl") {
 				if (name === "google pixel 9 pro xl") return { name, ...spec };
@@ -107,7 +123,93 @@ export function findScreenSpec(query: string): { name: string; pixels: string; d
 		}
 
 		// --- LAPTOP / MONITOR / TABLET ---
-		// mbp14, mbp16, dx13, tpx1, hps, az14, lg27, sg7, du27, ip129, sts9
+		// iPad (M2-M5 Pro/Air)
+		if (normalizedQuery.includes("ipad") || normalizedQuery.startsWith("ipd") || normalizedQuery.includes("m2") || normalizedQuery.includes("m3") || normalizedQuery.includes("m4") || normalizedQuery.includes("m5")) {
+			// iPad Pro 12.9 (M2)
+			if (normalizedQuery.includes("ipad pro 12.9") || normalizedQuery === "ip129" || normalizedQuery === "ipad129") {
+				if (name === "ipad pro 12.9") return { name, ...spec };
+			}
+			// iPad Pro 11 (M2/M4/M5)
+			if (normalizedQuery.includes("ipad pro 11") || normalizedQuery === "ip11pro" || normalizedQuery === "ip11m2" || normalizedQuery === "ip11m4" || normalizedQuery === "ip11m5") {
+				if (normalizedQuery.includes("m5") || normalizedQuery.includes("2025") || normalizedQuery.includes("2026")) {
+					if (name === "ipad pro 11 inch (m5)") return { name, ...spec };
+				} else if (normalizedQuery.includes("m4") || normalizedQuery.includes("2024")) {
+					if (name === "ipad pro 11 inch (m4)") return { name, ...spec };
+				} else if (normalizedQuery.includes("m2") || normalizedQuery.includes("2022")) {
+					if (name === "ipad pro 11 inch (m2)") return { name, ...spec };
+				}
+			}
+			// iPad Pro 13 (M4/M5)
+			if (normalizedQuery.includes("ipad pro 13") || normalizedQuery === "ip13pro" || normalizedQuery === "ip13m4" || normalizedQuery === "ip13m5") {
+				if (normalizedQuery.includes("m5") || normalizedQuery.includes("2025") || normalizedQuery.includes("2026")) {
+					if (name === "ipad pro 13 inch (m5)") return { name, ...spec };
+				} else if (normalizedQuery.includes("m4") || normalizedQuery.includes("2024")) {
+					if (name === "ipad pro 13 inch (m4)") return { name, ...spec };
+				}
+			}
+			// iPad Air (M2/M3/M4)
+			if (normalizedQuery.includes("ipad air") || normalizedQuery.includes("ia")) {
+				if (normalizedQuery.includes("13") || normalizedQuery.includes("13inch")) {
+					if (normalizedQuery.includes("m4") || normalizedQuery.includes("2026")) {
+						if (name === "ipad air 13 inch (m4)") return { name, ...spec };
+					} else if (normalizedQuery.includes("m3") || normalizedQuery.includes("2025")) {
+						if (name === "ipad air 13 inch (m3)") return { name, ...spec };
+					} else if (normalizedQuery.includes("m2") || normalizedQuery.includes("2024")) {
+						if (name === "ipad air 13 inch (m2)") return { name, ...spec };
+					}
+				}
+				if (normalizedQuery.includes("11") || normalizedQuery.includes("11inch")) {
+					if (normalizedQuery.includes("m4") || normalizedQuery.includes("2026")) {
+						if (name === "ipad air 11 inch (m4)") return { name, ...spec };
+					} else if (normalizedQuery.includes("m3") || normalizedQuery.includes("2025")) {
+						if (name === "ipad air 11 inch (m3)") return { name, ...spec };
+					} else if (normalizedQuery.includes("m2") || normalizedQuery.includes("2024")) {
+						if (name === "ipad air 11 inch (m2)") return { name, ...spec };
+					}
+				}
+			}
+		}
+
+		// Samsung Tablet
+		if (normalizedQuery.includes("samsung tab") || normalizedQuery.includes("sts") || normalizedQuery.includes("tab s")) {
+			if (normalizedQuery.includes("s11ultra") || normalizedQuery === "sts11u" || normalizedQuery === "tabs11u") {
+				if (name === "samsung galaxy tab s11 ultra") return { name, ...spec };
+			}
+			if (normalizedQuery.includes("s11") || normalizedQuery === "sts11" || normalizedQuery === "tabs11") {
+				if (name === "samsung galaxy tab s11") return { name, ...spec };
+			}
+			if (normalizedQuery.includes("s10feplus") || normalizedQuery === "sts10fep" || normalizedQuery === "tabs10fep") {
+				if (name === "samsung galaxy tab s10 fe plus") return { name, ...spec };
+			}
+			if (normalizedQuery.includes("s10fe") || normalizedQuery === "sts10fe" || normalizedQuery === "tabs10fe") {
+				if (name === "samsung galaxy tab s10 fe") return { name, ...spec };
+			}
+			if (normalizedQuery.includes("s10") || normalizedQuery === "sts10" || normalizedQuery === "tabs10") {
+				if (name === "samsung galaxy tab s10") return { name, ...spec };
+			}
+			if (normalizedQuery.includes("s9") || normalizedQuery === "sts9" || normalizedQuery === "tabs9") {
+				if (name === "samsung galaxy tab s9") return { name, ...spec };
+			}
+		}
+
+		// Xiaomi Pad
+		if (normalizedQuery.includes("xiaomi pad") || normalizedQuery.includes("xp")) {
+			if (normalizedQuery.includes("7") || normalizedQuery === "xp7") {
+				if (name === "xiaomi pad 7") return { name, ...spec };
+			}
+			if (normalizedQuery.includes("8") || normalizedQuery === "xp8") {
+				if (name === "xiaomi pad 8") return { name, ...spec };
+			}
+		}
+
+		// Google Pixel Tablet
+		if (normalizedQuery.includes("pixel tablet") || normalizedQuery.includes("gpt") || normalizedQuery.includes("pixel tablet 2")) {
+			if (normalizedQuery.includes("2") || normalizedQuery === "gpt2") {
+				if (name === "google pixel tablet 2") return { name, ...spec };
+			}
+		}
+
+		// Laptop / Monitor (Giữ nguyên)
 		if (normalizedQuery.includes("macbook") || normalizedQuery.includes("mbp")) {
 			if (normalizedQuery.includes("14") && name === "macbook pro 14 inch") return { name, ...spec };
 			if (normalizedQuery.includes("16") && name === "macbook pro 16 inch") return { name, ...spec };
@@ -132,12 +234,6 @@ export function findScreenSpec(query: string): { name: string; pixels: string; d
 		}
 		if (normalizedQuery.includes("dell u27") || normalizedQuery === "du27") {
 			if (name === "dell u2723qe") return { name, ...spec };
-		}
-		if (normalizedQuery.includes("ipad pro 12.9") || normalizedQuery === "ip129") {
-			if (name === "ipad pro 12.9") return { name, ...spec };
-		}
-		if (normalizedQuery.includes("samsung tab s9") || normalizedQuery === "sts9") {
-			if (name === "samsung galaxy tab s9") return { name, ...spec };
 		}
 	}
 
