@@ -31,6 +31,7 @@ import {
 	type CommandContext,
 	type ReplyPayload,
 } from "./musicActions.js";
+import { findScreenSpec } from "../utils/screenSpecs.js";
 
 // ViewChannel | SendMessages | EmbedLinks | AttachFiles | Connect | Speak | UseVAD
 const BOT_INVITE_PERMISSIONS = "36752384";
@@ -579,9 +580,40 @@ export function registerInteractionHandler(
 					await ctx.reply({ embeds: [embed] });
 					break;
 				}
-				default:
-					await ctx.reply({ content: "❌ Lệnh này chưa được hỗ trợ. Vui lòng thử /help.", ephemeral: true });
+				case "pixels": {
+					// Lấy tên dòng máy từ tham số "dong_may"
+					const dongMay = interaction.options.getString("dong_may", true).toLowerCase().trim();
+					
+					// Tìm dữ liệu trong file screenSpecs
+					const spec = findScreenSpec(dongMay);
+					
+					if (!spec) {
+						await ctx.reply({
+							content: `❌ Không tìm thấy thông tin cho dòng máy: **${dongMay}**.\nHãy thử các tên như: "iPhone 16 Pro Max", "Samsung Galaxy S24 Ultra", "MacBook Pro 14 inch"...`,
+							ephemeral: true,
+						});
+						break;
+					}
+
+					// Xử lý logic: iPhone 14-18 Pro Max chỉ gửi Pixels (không DPI)
+					const isIphoneProMax = dongMay.includes("iphone") && (
+						dongMay.includes("14 pro max") ||
+						dongMay.includes("15 pro max") ||
+						dongMay.includes("16 pro max") ||
+						dongMay.includes("17 pro max") ||
+						dongMay.includes("18 pro max")
+					);
+
+					let responseContent = `📱 **Thông tin màn hình: ${spec.name}**\n`;
+					responseContent += `📏 **Pixels:** ${spec.pixels}`;
+
+					if (!isIphoneProMax && spec.dpi) {
+						responseContent += ` | **DPI:** ${spec.dpi}`;
+					}
+
+					await ctx.reply({ content: responseContent });
 					break;
+				}
 			}
 		} catch (err) {
 			console.error("[InteractionHandler] Unhandled error:", err);
